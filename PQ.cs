@@ -23,6 +23,7 @@ class Item
     public List<Win> Wins = new List<Win>(); // one task can span several snapped windows
     public IntPtr LastH;                      // which of them you used last (gets focus on click)
     public int Sessions;                      // completed focus sessions -> next session's default length
+    public int GroupId;                       // 0 = alone; same id = one task group (windows share state/timers)
     public bool Has(IntPtr h)
     {
         if (h == IntPtr.Zero) return false;
@@ -116,6 +117,7 @@ class PQForm : Form
     int dragIndex = -1, tipIndex = -1;
     Point dragStart;
     Item dragItem; // card currently lifted
+    Item mergeTarget; // card it would be grouped with if dropped now
     int dropTick;
 
     // last window the user was in that is not this widget (event-driven, no polling)
@@ -270,6 +272,9 @@ class PQForm : Form
             var it = list.SelectedItem as Item;
             if (it != null) { Attach(it, lastExternal); Changed(); }
         });
+        var leave = new ToolStripMenuItem("묶음에서 빼기", null, (o, e) => LeaveGroup(list.SelectedItem as Item));
+        menu.Items.Add(leave);
+        menu.Opening += (o, e) => { var it = list.SelectedItem as Item; leave.Visible = it != null && it.GroupId != 0; };
         menu.Items.Add("맨 위로", null, (o, e) => MoveSelected(-list.SelectedIndex));
         menu.Items.Add("타이머 리셋", null, (o, e) => ResetSelected());
         menu.Items.Add("집중 회차 처음으로 (15분부터)", null, (o, e) =>
@@ -345,6 +350,7 @@ class PQForm : Form
         {
             bool inPrev = it.Has(prev), inNow = it.Has(h);
             if (inNow)
+
             {
                 it.LastH = h;
                 foreach (var w in it.Wins)
@@ -358,8 +364,8 @@ class PQForm : Form
                     }
                 }
             }
-            // entering or leaving the task restarts its clock; moving between its own windows doesn't
-            if (inPrev != inNow) { it.Created = DateTime.Now; changed = true; }
+            // entering or leaving the task (or its group) restarts its clock; moving inside the group doesn't
+            if (GHas(it, prev) != GHas(it, h)) { it.Created = DateTime.Now; changed = true; }
         }
         if (changed) Save();
         UpdateGhost();     // entry appears only in windows without an item
@@ -577,12 +583,22 @@ class PQForm : Form
                 tip.Hide(list); tipIndex = -1;
                 list.Invalidate();
             }
-            // live reorder: the lifted card jumps to the row under the cursor
+            // live reorder: the lifted card jumps to the row under the cursor.
+            // the part of a card you reach first (its near side ~60%) = "drop onto it" -> makes a group.
             int n = list.Items.Count;
             int to = e.Y < 0 ? 0 : list.IndexFromPoint(new Point(list.Width / 2, e.Y));
+            bool outside = to < 0 || e.Y < 0;
             if (to < 0) to = n - 1;
             int cur = list.Items.IndexOf(dragItem);
-            if (to != cur)
+            Item merge = null;
+            if (!outside && to != cur)
+            {
+                var rr = list.GetItemRectangle(to);
+                float frac = (e.Y - rr.Y) / (float)rr.Height;
+                if (to > cur ? frac < 0.6f : frac > 0.4f) merge = (Item)list.Items[to];
+            }
+            if (merge != mergeTarget) { mergeTarget = merge; list.Invalidate(); }
+            if (merge == null && to != cur)
             {
                 list.BeginUpdate();
                 list.Items.RemoveAt(cur);
@@ -592,7 +608,7 @@ class PQForm : Form
             }
             return;
         }
-        if (dragItem != null) { dragItem = null; list.Cursor = Cursors.Default; Changed(); } // button released elsewhere
+        if (dragItem != null) { var d = dragItem; dragItem = null; mergeTarget = null; list.Cursor = Cursors.Default; NormalizeGroups(d); Changed(); } // button released elsewhere
         int i = list.IndexFromPoint(e.Location);
         if (i == tipIndex) return;
         tipIndex = i;
@@ -617,7 +633,11 @@ class PQForm : Form
         if (e.Button != MouseButtons.Left) return;
         if (dragItem != null) // drop
         {
+            var d = dragItem;
             dragItem = null;
+            if (mergeTarget != null) JoinGroup(d, mergeTarget); // dropped onto a card -> group
+            mergeTarget = null;
+            NormalizeGroups(d);
             dragIndex = -1;
             dropTick = Environment.TickCount;
             list.Cursor = Cursors.Default;
@@ -642,6 +662,7 @@ class PQForm : Form
         list.Items.RemoveAt(i);
         list.Items.Insert(to, it);
         list.SelectedIndex = to;
+        NormalizeGroups((Item)it);
         Changed();
     }
 
@@ -672,7 +693,7 @@ class PQForm : Form
         if (e.Index < 0 || e.Index >= list.Items.Count) return;
 
         var it = (Item)list.Items[e.Index];
-        bool active = it.Has(lastExternal);
+        bool active = GHas(it, lastExternal); // whole group shows 작업 중
         // while focusing, the other items' clocks are frozen and they stay white
         bool frozen = focusing && !active && !InFocus(it);
         DateTime now = frozen ? (it.Created < focusStart ? focusStart : it.Created) : DateTime.Now;
@@ -700,6 +721,22 @@ class PQForm : Form
         {
             using (var b = new SolidBrush(fill)) g.FillPath(b, path);
             using (var pen = (sel || lifted) ? new Pen(deep, (lifted ? 2f : 1.6f) * s) : new Pen(Lerp(fill, deep, 0.25f), 1f * s)) g.DrawPath(pen, path);
+            if (it == mergeTarget) // "drop here to group"
+            {
+                Color mc = it.GroupId != 0 ? GroupColor(it.GroupId) : GroupColor(1);
+                using (var pen = new Pen(mc, 2.4f * s) { DashStyle = System.Drawing.Drawing2D.DashStyle.Dash }) g.DrawPath(pen, path);
+            }
+        }
+
+        // group stripe on the left; it bridges the gap to neighbours of the same group
+        if (it.GroupId != 0 && !lifted)
+        {
+            int n = list.Items.Count;
+            bool up = e.Index > 0 && SameGroup((Item)list.Items[e.Index - 1], it);
+            bool down = e.Index + 1 < n && SameGroup((Item)list.Items[e.Index + 1], it);
+            int sx = r.X + (int)(4 * s), sw = Math.Max(2, (int)(3 * s));
+            int top = up ? e.Bounds.Top : r.Y + (int)(6 * s), bot = down ? e.Bounds.Bottom : r.Bottom - (int)(6 * s);
+            using (var b = new SolidBrush(GroupColor(it.GroupId))) g.FillRectangle(b, sx, top, sw, bot - top);
         }
 
         // age badge on the right
@@ -784,7 +821,7 @@ class PQForm : Form
     bool InFocus(Item it)
     {
         if (!focusing || it == null) return false;
-        if (it == focusItem) return true;
+        if (it == focusItem || SameGroup(it, focusItem)) return true;
         foreach (var w in it.Wins) if (focusWins.Contains(w.H)) return true;
         return false;
     }
@@ -817,6 +854,76 @@ class PQForm : Form
 
     static int Tier(Item it) { return it == null ? 0 : Math.Min(TierFocus.Length - 1, it.Sessions); }
 
+    // ---------- task groups ----------
+
+    static bool SameGroup(Item a, Item b) { return a != null && b != null && a.GroupId != 0 && a.GroupId == b.GroupId; }
+
+    // is h one of this item's windows, or of any item in its group?
+    bool GHas(Item it, IntPtr h)
+    {
+        if (it.Has(h)) return true;
+        if (it.GroupId == 0 || h == IntPtr.Zero) return false;
+        foreach (Item o in list.Items) if (o != it && o.GroupId == it.GroupId && o.Has(h)) return true;
+        return false;
+    }
+
+    // drop `it` onto `target`: same group, placed right after the target's group
+    void JoinGroup(Item it, Item target)
+    {
+        if (target.GroupId == 0)
+        {
+            int max = 0;
+            foreach (Item o in list.Items) max = Math.Max(max, o.GroupId);
+            target.GroupId = max + 1;
+        }
+        it.GroupId = target.GroupId;
+        list.Items.Remove(it);
+        int at = list.Items.IndexOf(target);
+        while (at + 1 < list.Items.Count && SameGroup((Item)list.Items[at + 1], target)) at++;
+        list.Items.Insert(at + 1, it);
+        list.SelectedItem = it;
+    }
+
+    void LeaveGroup(Item it)
+    {
+        if (it == null || it.GroupId == 0) return;
+        int g = it.GroupId;
+        it.GroupId = 0;
+        // move it just below its old group so the group stays in one piece
+        list.Items.Remove(it);
+        int last = -1;
+        for (int k = 0; k < list.Items.Count; k++) if (((Item)list.Items[k]).GroupId == g) last = k;
+        list.Items.Insert(last < 0 ? 0 : last + 1, it);
+        list.SelectedItem = it;
+        NormalizeGroups();
+        Changed();
+    }
+
+    // after a reorder: dropped between two members -> joins them; a member with no neighbour in its group -> leaves
+    void NormalizeGroups(Item dropped = null)
+    {
+        int n = list.Items.Count;
+        if (dropped != null)
+        {
+            int i = list.Items.IndexOf(dropped);
+            Item a = i > 0 ? (Item)list.Items[i - 1] : null, b = i + 1 < n ? (Item)list.Items[i + 1] : null;
+            if (SameGroup(a, b)) dropped.GroupId = a.GroupId;
+        }
+        var lone = new List<Item>();
+        for (int i = 0; i < n; i++)
+        {
+            var it = (Item)list.Items[i];
+            if (it.GroupId == 0) continue;
+            bool up = i > 0 && SameGroup((Item)list.Items[i - 1], it), down = i + 1 < n && SameGroup((Item)list.Items[i + 1], it);
+            if (!up && !down) lone.Add(it);
+        }
+        foreach (var it in lone) it.GroupId = 0;
+    }
+
+    static readonly Color[] GroupColors = {
+        Color.FromArgb(170, 150, 215), Color.FromArgb(240, 160, 120), Color.FromArgb(110, 170, 220), Color.FromArgb(120, 190, 160) };
+    static Color GroupColor(int g) { return GroupColors[(g - 1) % GroupColors.Length]; }
+
     Item ItemOf(IntPtr h)
     {
         foreach (Item it in list.Items) if (it.Has(h)) return it;
@@ -839,7 +946,11 @@ class PQForm : Form
         focusWins = new HashSet<IntPtr>(SnapGroup(h)); // the window you were in + windows snapped beside it
         focusItem = null;
         foreach (Item it in list.Items)
-            if (it.Has(h)) { focusItem = it; foreach (var w in it.Wins) if (w.H != IntPtr.Zero) focusWins.Add(w.H); break; }
+            if (it.Has(h)) { focusItem = it; break; }
+        if (focusItem != null) // the whole group counts as "the task": moving between its windows keeps the timer
+            foreach (Item it in list.Items)
+                if (it == focusItem || SameGroup(it, focusItem))
+                    foreach (var w in it.Wins) if (w.H != IntPtr.Zero) focusWins.Add(w.H);
         focusing = true;
         focusStart = DateTime.Now;
         focusTier = selTier;
@@ -1133,7 +1244,11 @@ class PQForm : Form
                     it.Wins.Add(new Win { H = (IntPtr)hw, Proc = k < ps.Length ? ps[k] : "", Title = k < ts.Length ? ts[k] : "" });
                 }
                 int sess;
-                if (f.Length >= 6 && int.TryParse(f[5], out sess)) { it.Sessions = sess; it.Text = f[4]; } // 6th col: sessions done
+                if (f.Length >= 6 && int.TryParse(f[5], out sess)) // 6th col: sessions done, 7th: group id
+                {
+                    it.Sessions = sess; it.Text = f[4];
+                    int gid; if (f.Length >= 7 && int.TryParse(f[6], out gid)) it.GroupId = gid;
+                }
                 else it.Text = string.Join(" ", f, 4, f.Length - 4);
             }
             else it.Text = string.Join(" ", f, 1, f.Length - 1); // oldest 2-column format
@@ -1152,7 +1267,7 @@ class PQForm : Form
             string sep = US.ToString();
             sb.Append(it.Created.Ticks).Append('\t').Append(string.Join(sep, hs)).Append('\t')
               .Append(string.Join(sep, ps)).Append('\t').Append(string.Join(sep, ts)).Append('\t')
-              .Append(Clean(it.Text)).Append('\t').Append(it.Sessions).Append('\n');
+              .Append(Clean(it.Text)).Append('\t').Append(it.Sessions).Append('\t').Append(it.GroupId).Append('\n');
         }
         string tmp = path + ".tmp";
         File.WriteAllText(tmp, sb.ToString(), Encoding.UTF8);
