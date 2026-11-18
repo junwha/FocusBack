@@ -148,7 +148,8 @@ class PQForm : Form
     readonly Timer tick;            // 1s, runs only while focusing / on break / showing a note
     // per task: 1st session 15/3, 2nd 30/5, then 60/15. -/+ overrides the focus length for now.
     static readonly int[] TierFocus = { 15, 30, 60 }, TierBreak = { 3, 5, 15 };
-    int overrideMin; // 0 = use the task's tier
+    int selTier;     // round picked with < > (0-based); follows the task's progress
+    int focusTier;   // round of the running session
     Item barItem;    // task of the window you're in (what the bar shows)
     bool focusing;
     DateTime focusStart, focusEnd;
@@ -274,7 +275,7 @@ class PQForm : Form
         menu.Items.Add("집중 회차 처음으로 (15분부터)", null, (o, e) =>
         {
             var it = list.SelectedItem as Item;
-            if (it != null) { it.Sessions = 0; if (it == barItem) overrideMin = 0; Changed(); bar.Invalidate(); }
+            if (it != null) { it.Sessions = 0; if (it == barItem) selTier = 0; Changed(); bar.Invalidate(); }
         });
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(OpacityMenu());
@@ -293,7 +294,7 @@ class PQForm : Form
             bool hot = minusR.Contains(e.Location) || plusR.Contains(e.Location) || goR.Contains(e.Location) || stopR.Contains(e.Location);
             bar.Cursor = hot ? Cursors.Hand : Cursors.Default;
         };
-        bar.MouseWheel += (o, e) => { if (!focusing && breakForms == null) SetFocusMin(FocusMinNow + (e.Delta > 0 ? 5 : -5)); };
+        bar.MouseWheel += (o, e) => { if (!focusing && breakForms == null) StepTier(e.Delta > 0 ? 1 : -1); };
         tick = new Timer { Interval = 1000 };
         tick.Tick += OnTick;
         bigFont = Pick(40f, "Pretendard SemiBold", "Noto Sans KR Medium", "Segoe UI Semibold");
@@ -806,14 +807,15 @@ class PQForm : Form
         SwitchTo(it);
     }
 
-    void SetFocusMin(int v)
+    // < > : move between rounds (15/3, 30/5, 60/15); remembered for the task
+    void StepTier(int d)
     {
-        overrideMin = Math.Max(5, Math.Min(120, v));
+        selTier = Math.Max(0, Math.Min(TierFocus.Length - 1, selTier + d));
+        if (barItem != null) { barItem.Sessions = selTier; Save(); }
         bar.Invalidate();
     }
 
     static int Tier(Item it) { return it == null ? 0 : Math.Min(TierFocus.Length - 1, it.Sessions); }
-    int FocusMinNow { get { return overrideMin > 0 ? overrideMin : TierFocus[Tier(barItem)]; } }
 
     Item ItemOf(IntPtr h)
     {
@@ -826,7 +828,7 @@ class PQForm : Form
     {
         if (focusing) return;
         var it = ItemOf(lastExternal);
-        if (it != barItem) { barItem = it; overrideMin = 0; }
+        if (it != barItem) { barItem = it; selTier = Tier(it); }
         bar.Invalidate();
     }
 
@@ -840,8 +842,9 @@ class PQForm : Form
             if (it.Has(h)) { focusItem = it; foreach (var w in it.Wins) if (w.H != IntPtr.Zero) focusWins.Add(w.H); break; }
         focusing = true;
         focusStart = DateTime.Now;
-        focusEnd = focusStart.AddMinutes(FocusMinNow);
-        breakMin = TierBreak[Tier(focusItem)];
+        focusTier = selTier;
+        focusEnd = focusStart.AddMinutes(TierFocus[focusTier]);
+        breakMin = TierBreak[focusTier];
         warnedItem = null;
         barNoteUntil = DateTime.MinValue;
         tick.Start();
@@ -877,7 +880,7 @@ class PQForm : Form
         var now = DateTime.Now;
         if (focusing && now >= focusEnd)
         {
-            if (focusItem != null) focusItem.Sessions++; // next session for this task is longer
+            if (focusItem != null) focusItem.Sessions = Math.Max(focusItem.Sessions, focusTier + 1); // next round for this task
             StopFocus(null, false);
             barItem = null; UpdateBarItem();
             StartBreak();
@@ -899,8 +902,8 @@ class PQForm : Form
     {
         if (e.Button != MouseButtons.Left || breakForms != null) return;
         if (focusing) { if (stopR.Contains(e.Location)) StopFocus("집중 중지", false); return; }
-        if (minusR.Contains(e.Location)) SetFocusMin(FocusMinNow - 5);
-        else if (plusR.Contains(e.Location)) SetFocusMin(FocusMinNow + 5);
+        if (minusR.Contains(e.Location)) StepTier(-1);
+        else if (plusR.Contains(e.Location)) StepTier(1);
         else if (goR.Contains(e.Location))
         {
             StartFocus();
@@ -975,15 +978,15 @@ class PQForm : Form
             }
             int bs = ph, x = r.X + (int)(8 * s);
             minusR = new Rectangle(x, py, bs, bs);
-            Pill(g, minusR, Color.FromArgb(240, 236, 244), GrayDeep, "−", ageFont);
+            Pill(g, minusR, Color.FromArgb(240, 236, 244), selTier > 0 ? GrayDeep : Color.FromArgb(205, 200, 212), "<", ageFont);
             int lw = (int)(44 * s);
-            TextRenderer.DrawText(g, FocusMinNow + "분", Font, new Rectangle(minusR.Right, r.Y, lw, r.Height), Ink,
+            TextRenderer.DrawText(g, TierFocus[selTier] + "분", Font, new Rectangle(minusR.Right, r.Y, lw, r.Height), Ink,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
             plusR = new Rectangle(minusR.Right + lw, py, bs, bs);
             // which session of this task + its break length
-            TextRenderer.DrawText(g, ((barItem == null ? 0 : barItem.Sessions) + 1) + "회차 · 휴식 " + TierBreak[Tier(barItem)] + "분",
+            TextRenderer.DrawText(g, (selTier + 1) + "회차 · 휴식 " + TierBreak[selTier] + "분",
                 ageFont, new Rectangle(plusR.Right + (int)(6 * s), r.Y, goR.X - plusR.Right - (int)(8 * s), r.Height), Muted, lf);
-            Pill(g, plusR, Color.FromArgb(240, 236, 244), GrayDeep, "+", ageFont);
+            Pill(g, plusR, Color.FromArgb(240, 236, 244), selTier < TierFocus.Length - 1 ? GrayDeep : Color.FromArgb(205, 200, 212), ">", ageFont);
         }
     }
 
