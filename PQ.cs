@@ -22,6 +22,7 @@ class Item
     public DateTime Created;
     public List<Win> Wins = new List<Win>(); // one task can span several snapped windows
     public IntPtr LastH;                      // which of them you used last (gets focus on click)
+    public int Sessions;                      // completed focus sessions -> next session's default length
     public bool Has(IntPtr h)
     {
         if (h == IntPtr.Zero) return false;
@@ -140,12 +141,15 @@ class PQForm : Form
         return Color.FromArgb(a.R + (int)((b.R - a.R) * t), a.G + (int)((b.G - a.G) * t), a.B + (int)((b.B - a.B) * t));
     }
 
-    string settingsPath, focusPath;
+    string settingsPath;
 
     // ---- focus timer state ----
     readonly DBPanel bar;
     readonly Timer tick;            // 1s, runs only while focusing / on break / showing a note
-    int focusMin = 30;
+    // per task: 1st session 15/3, 2nd 30/5, then 60/15. -/+ overrides the focus length for now.
+    static readonly int[] TierFocus = { 15, 30, 60 }, TierBreak = { 3, 5, 15 };
+    int overrideMin; // 0 = use the task's tier
+    Item barItem;    // task of the window you're in (what the bar shows)
     bool focusing;
     DateTime focusStart, focusEnd;
     HashSet<IntPtr> focusWins = new HashSet<IntPtr>();
@@ -154,7 +158,7 @@ class PQForm : Form
     string barNote; bool barWarn; DateTime barNoteUntil;
     Rectangle minusR, plusR, goR, stopR;
     List<Overlay> breakForms; DateTime breakStart, breakEnd;
-    const int BreakMin = 5;
+    int breakMin = 5;
     Rectangle skipR;
     Font bigFont, midFont;
 
@@ -164,8 +168,6 @@ class PQForm : Form
         Directory.CreateDirectory(dir);
         path = Path.Combine(dir, "items.tsv");
         settingsPath = Path.Combine(dir, "opacity.txt");
-        focusPath = Path.Combine(dir, "focus.txt");
-        try { int fm; if (int.TryParse(File.ReadAllText(focusPath).Trim(), out fm)) focusMin = Math.Max(5, Math.Min(120, fm)); } catch { }
 
         using (var g = CreateGraphics()) s = g.DpiX / 96f;
         row = (int)(34 * s);
@@ -269,6 +271,11 @@ class PQForm : Form
         });
         menu.Items.Add("맨 위로", null, (o, e) => MoveSelected(-list.SelectedIndex));
         menu.Items.Add("타이머 리셋", null, (o, e) => ResetSelected());
+        menu.Items.Add("집중 회차 처음으로 (15분부터)", null, (o, e) =>
+        {
+            var it = list.SelectedItem as Item;
+            if (it != null) { it.Sessions = 0; if (it == barItem) overrideMin = 0; Changed(); bar.Invalidate(); }
+        });
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(OpacityMenu());
         menu.Items.Add("종료", null, (o, e) => Close());
@@ -286,7 +293,7 @@ class PQForm : Form
             bool hot = minusR.Contains(e.Location) || plusR.Contains(e.Location) || goR.Contains(e.Location) || stopR.Contains(e.Location);
             bar.Cursor = hot ? Cursors.Hand : Cursors.Default;
         };
-        bar.MouseWheel += (o, e) => { if (!focusing && breakForms == null) SetFocusMin(focusMin + (e.Delta > 0 ? 5 : -5)); };
+        bar.MouseWheel += (o, e) => { if (!focusing && breakForms == null) SetFocusMin(FocusMinNow + (e.Delta > 0 ? 5 : -5)); };
         tick = new Timer { Interval = 1000 };
         tick.Tick += OnTick;
         bigFont = Pick(40f, "Pretendard SemiBold", "Noto Sans KR Medium", "Segoe UI Semibold");
@@ -355,6 +362,7 @@ class PQForm : Form
         }
         if (changed) Save();
         UpdateGhost();     // entry appears only in windows without an item
+        UpdateBarItem();   // bar shows this task's next session length
         list.Invalidate(); // recolor the active item
     }
 
@@ -712,7 +720,7 @@ class PQForm : Form
             TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
     }
 
-    void Changed() { Save(); UpdateGhost(); Fit(); list.Invalidate(); }
+    void Changed() { Save(); UpdateGhost(); UpdateBarItem(); Fit(); list.Invalidate(); }
 
     // same card shape for items and the ghost entry
     Rectangle CardRect(Rectangle b)
@@ -800,8 +808,25 @@ class PQForm : Form
 
     void SetFocusMin(int v)
     {
-        focusMin = Math.Max(5, Math.Min(120, v));
-        try { File.WriteAllText(focusPath, focusMin.ToString()); } catch { }
+        overrideMin = Math.Max(5, Math.Min(120, v));
+        bar.Invalidate();
+    }
+
+    static int Tier(Item it) { return it == null ? 0 : Math.Min(TierFocus.Length - 1, it.Sessions); }
+    int FocusMinNow { get { return overrideMin > 0 ? overrideMin : TierFocus[Tier(barItem)]; } }
+
+    Item ItemOf(IntPtr h)
+    {
+        foreach (Item it in list.Items) if (it.Has(h)) return it;
+        return null;
+    }
+
+    // the window you're in changed: the bar shows that task's next default again
+    void UpdateBarItem()
+    {
+        if (focusing) return;
+        var it = ItemOf(lastExternal);
+        if (it != barItem) { barItem = it; overrideMin = 0; }
         bar.Invalidate();
     }
 
@@ -815,7 +840,8 @@ class PQForm : Form
             if (it.Has(h)) { focusItem = it; foreach (var w in it.Wins) if (w.H != IntPtr.Zero) focusWins.Add(w.H); break; }
         focusing = true;
         focusStart = DateTime.Now;
-        focusEnd = focusStart.AddMinutes(focusMin);
+        focusEnd = focusStart.AddMinutes(FocusMinNow);
+        breakMin = TierBreak[Tier(focusItem)];
         warnedItem = null;
         barNoteUntil = DateTime.MinValue;
         tick.Start();
@@ -851,7 +877,9 @@ class PQForm : Form
         var now = DateTime.Now;
         if (focusing && now >= focusEnd)
         {
+            if (focusItem != null) focusItem.Sessions++; // next session for this task is longer
             StopFocus(null, false);
+            barItem = null; UpdateBarItem();
             StartBreak();
         }
         if (breakForms != null)
@@ -871,8 +899,8 @@ class PQForm : Form
     {
         if (e.Button != MouseButtons.Left || breakForms != null) return;
         if (focusing) { if (stopR.Contains(e.Location)) StopFocus("집중 중지", false); return; }
-        if (minusR.Contains(e.Location)) SetFocusMin(focusMin - 5);
-        else if (plusR.Contains(e.Location)) SetFocusMin(focusMin + 5);
+        if (minusR.Contains(e.Location)) SetFocusMin(FocusMinNow - 5);
+        else if (plusR.Contains(e.Location)) SetFocusMin(FocusMinNow + 5);
         else if (goR.Contains(e.Location))
         {
             StartFocus();
@@ -936,9 +964,9 @@ class PQForm : Form
             // idle: [-] 30분 [+]      [▶ 집중 시작]
             using (var b = new SolidBrush(Color.White)) g.FillPath(b, card);
             using (var pen = new Pen(Color.FromArgb(215, 208, 222), 1f * s)) g.DrawPath(pen, card);
-            int gw = (int)(86 * s);
+            int gw = (int)(58 * s);
             goR = new Rectangle(r.Right - gw - (int)(6 * s), py, gw, ph);
-            Pill(g, goR, GreenFill, GreenDeep, "▶ 집중 시작", ageFont);
+            Pill(g, goR, GreenFill, GreenDeep, "▶ 시작", ageFont);
             if (note)
             {
                 TextRenderer.DrawText(g, barNote, ageFont, new Rectangle(r.X + doneW, r.Y, goR.X - r.X - doneW - (int)(4 * s), r.Height),
@@ -949,9 +977,12 @@ class PQForm : Form
             minusR = new Rectangle(x, py, bs, bs);
             Pill(g, minusR, Color.FromArgb(240, 236, 244), GrayDeep, "−", ageFont);
             int lw = (int)(44 * s);
-            TextRenderer.DrawText(g, focusMin + "분", Font, new Rectangle(minusR.Right, r.Y, lw, r.Height), Ink,
+            TextRenderer.DrawText(g, FocusMinNow + "분", Font, new Rectangle(minusR.Right, r.Y, lw, r.Height), Ink,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
             plusR = new Rectangle(minusR.Right + lw, py, bs, bs);
+            // which session of this task + its break length
+            TextRenderer.DrawText(g, ((barItem == null ? 0 : barItem.Sessions) + 1) + "회차 · 휴식 " + TierBreak[Tier(barItem)] + "분",
+                ageFont, new Rectangle(plusR.Right + (int)(6 * s), r.Y, goR.X - plusR.Right - (int)(8 * s), r.Height), Muted, lf);
             Pill(g, plusR, Color.FromArgb(240, 236, 244), GrayDeep, "+", ageFont);
         }
     }
@@ -961,7 +992,7 @@ class PQForm : Form
     void StartBreak()
     {
         breakStart = DateTime.Now;
-        breakEnd = breakStart.AddMinutes(BreakMin);
+        breakEnd = breakStart.AddMinutes(breakMin);
         breakForms = new List<Overlay>();
         foreach (var sc in Screen.AllScreens)
         {
@@ -1010,7 +1041,7 @@ class PQForm : Form
             new Rectangle(c.X, c.Y + (int)(150 * s), c.Width, (int)(24 * s)), Muted, cf);
         // progress
         var pr = new Rectangle(c.X + (int)(50 * s), c.Bottom - (int)(46 * s), c.Width - (int)(100 * s), (int)(8 * s));
-        float done = (float)Math.Max(0, Math.Min(1, 1 - left / (BreakMin * 60.0)));
+        float done = (float)Math.Max(0, Math.Min(1, 1 - left / (breakMin * 60.0)));
         using (var p = Round(pr, pr.Height / 2))
         using (var b = new SolidBrush(Color.FromArgb(232, 226, 246))) g.FillPath(b, p);
         if (done > 0.01f)
@@ -1098,7 +1129,9 @@ class PQForm : Form
                     if (hw == 0 && (k >= ps.Length || ps[k] == "")) continue;
                     it.Wins.Add(new Win { H = (IntPtr)hw, Proc = k < ps.Length ? ps[k] : "", Title = k < ts.Length ? ts[k] : "" });
                 }
-                it.Text = string.Join(" ", f, 4, f.Length - 4);
+                int sess;
+                if (f.Length >= 6 && int.TryParse(f[5], out sess)) { it.Sessions = sess; it.Text = f[4]; } // 6th col: sessions done
+                else it.Text = string.Join(" ", f, 4, f.Length - 4);
             }
             else it.Text = string.Join(" ", f, 1, f.Length - 1); // oldest 2-column format
             ResolveAll(it); // re-link to the live windows after a restart
@@ -1116,7 +1149,7 @@ class PQForm : Form
             string sep = US.ToString();
             sb.Append(it.Created.Ticks).Append('\t').Append(string.Join(sep, hs)).Append('\t')
               .Append(string.Join(sep, ps)).Append('\t').Append(string.Join(sep, ts)).Append('\t')
-              .Append(Clean(it.Text)).Append('\n');
+              .Append(Clean(it.Text)).Append('\t').Append(it.Sessions).Append('\n');
         }
         string tmp = path + ".tmp";
         File.WriteAllText(tmp, sb.ToString(), Encoding.UTF8);
