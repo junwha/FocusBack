@@ -31,6 +31,35 @@ class Item
     public override string ToString() { return Text; }
 }
 
+// flicker-free owner-drawn panel
+class DBPanel : Panel
+{
+    public DBPanel() { DoubleBuffered = true; ResizeRedraw = true; }
+}
+
+// full-screen break cover: no taskbar/Alt+Tab entry, can't be closed by Alt+F4
+class Overlay : Form
+{
+    public bool AllowClose;
+    public Overlay()
+    {
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        TopMost = true;
+        StartPosition = FormStartPosition.Manual;
+        DoubleBuffered = true;
+    }
+    protected override CreateParams CreateParams
+    {
+        get { var cp = base.CreateParams; cp.ExStyle |= 0x80; return cp; }
+    }
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        if (!AllowClose) e.Cancel = true;
+        base.OnFormClosing(e);
+    }
+}
+
 class PQForm : Form
 {
     [DllImport("user32.dll")] static extern bool RegisterHotKey(IntPtr h, int id, uint mod, uint vk);
@@ -111,7 +140,23 @@ class PQForm : Form
         return Color.FromArgb(a.R + (int)((b.R - a.R) * t), a.G + (int)((b.G - a.G) * t), a.B + (int)((b.B - a.B) * t));
     }
 
-    string settingsPath;
+    string settingsPath, focusPath;
+
+    // ---- focus timer state ----
+    readonly DBPanel bar;
+    readonly Timer tick;            // 1s, runs only while focusing / on break / showing a note
+    int focusMin = 30;
+    bool focusing;
+    DateTime focusStart, focusEnd;
+    HashSet<IntPtr> focusWins = new HashSet<IntPtr>();
+    Item focusItem;
+    Item warnedItem; int warnTick;
+    string barNote; bool barWarn; DateTime barNoteUntil;
+    Rectangle minusR, plusR, goR, stopR;
+    List<Overlay> breakForms; DateTime breakStart, breakEnd;
+    const int BreakMin = 5;
+    Rectangle skipR;
+    Font bigFont, midFont;
 
     PQForm()
     {
@@ -119,6 +164,8 @@ class PQForm : Form
         Directory.CreateDirectory(dir);
         path = Path.Combine(dir, "items.tsv");
         settingsPath = Path.Combine(dir, "opacity.txt");
+        focusPath = Path.Combine(dir, "focus.txt");
+        try { int fm; if (int.TryParse(File.ReadAllText(focusPath).Trim(), out fm)) focusMin = Math.Max(5, Math.Min(120, fm)); } catch { }
 
         using (var g = CreateGraphics()) s = g.DpiX / 96f;
         row = (int)(34 * s);
@@ -212,7 +259,7 @@ class PQForm : Form
 
         // right-click = this menu; Shift+click = done
         menu = new ContextMenuStrip { Font = Pick(9f, "Pretendard", "Noto Sans KR", "Malgun Gothic") };
-        menu.Items.Add("이 창으로 이동 (클릭 / Enter)", null, (o, e) => SwitchTo(list.SelectedItem as Item));
+        menu.Items.Add("이 창으로 이동 (클릭 / Enter)", null, (o, e) => TrySwitch(list.SelectedItem as Item));
         menu.Items.Add("완료 (Shift+클릭 / Del)", null, (o, e) => RemoveSelected());
         menu.Items.Add("+ 직전 창도 이 할 일에 연결", null, (o, e) => AddWindow(list.SelectedItem as Item, lastExternal));
         menu.Items.Add("창 연결 다시 하기 (직전 창 + 옆 창)", null, (o, e) =>
@@ -230,7 +277,23 @@ class PQForm : Form
         hmenu.Items.Add("종료", null, (o, e) => Close());
         header.ContextMenuStrip = hmenu;
 
-        // all Dock=Top: last added ends up topmost -> header, list, ghost entry
+        // focus timer bar at the bottom
+        bar = new DBPanel { Dock = DockStyle.Top, Height = row + (int)(4 * s), BackColor = Bg };
+        bar.Paint += PaintBar;
+        bar.MouseDown += BarMouseDown;
+        bar.MouseMove += (o, e) =>
+        {
+            bool hot = minusR.Contains(e.Location) || plusR.Contains(e.Location) || goR.Contains(e.Location) || stopR.Contains(e.Location);
+            bar.Cursor = hot ? Cursors.Hand : Cursors.Default;
+        };
+        bar.MouseWheel += (o, e) => { if (!focusing && breakForms == null) SetFocusMin(focusMin + (e.Delta > 0 ? 5 : -5)); };
+        tick = new Timer { Interval = 1000 };
+        tick.Tick += OnTick;
+        bigFont = Pick(40f, "Pretendard SemiBold", "Noto Sans KR Medium", "Segoe UI Semibold");
+        midFont = Pick(13f, "Pretendard SemiBold", "Noto Sans KR Medium", "Malgun Gothic");
+
+        // all Dock=Top: last added ends up topmost -> header, list, ghost entry, focus bar
+        Controls.Add(bar);
         Controls.Add(inputBox);
         Controls.Add(list);
         Controls.Add(header);
@@ -268,6 +331,7 @@ class PQForm : Form
         IntPtr prev = lastExternal;
         lastExternal = h;
         if (list == null) return;
+        if (focusing && !focusWins.Contains(h)) StopFocus("다른 창으로 이동 → 집중 초기화", true); // left the task
         bool changed = false;
         foreach (Item it in list.Items)
         {
@@ -485,7 +549,7 @@ class PQForm : Form
     void ListKeyDown(object o, KeyEventArgs e)
     {
         if (e.KeyCode == Keys.Delete) { RemoveSelected(); e.Handled = true; }
-        else if (e.KeyCode == Keys.Enter) { SwitchTo(list.SelectedItem as Item); e.Handled = true; }
+        else if (e.KeyCode == Keys.Enter) { TrySwitch(list.SelectedItem as Item); e.Handled = true; }
         else if (e.Alt && e.KeyCode == Keys.Up) { MoveSelected(-1); e.Handled = true; }
         else if (e.Alt && e.KeyCode == Keys.Down) { MoveSelected(1); e.Handled = true; }
         else if (e.KeyCode == Keys.Escape) { BackToWork(); e.Handled = true; }
@@ -556,7 +620,7 @@ class PQForm : Form
         dragIndex = -1;
         if (!click) return;
         if ((ModifierKeys & Keys.Shift) != 0) { list.SelectedIndex = i; RemoveSelected(); } // Shift+click = done
-        else if ((ModifierKeys & Keys.Control) == 0) SwitchTo((Item)list.Items[i]);       // Ctrl+click = just select
+        else if ((ModifierKeys & Keys.Control) == 0) TrySwitch((Item)list.Items[i]);      // Ctrl+click = just select
     }
 
     void MoveSelected(int delta)
@@ -599,11 +663,14 @@ class PQForm : Form
         if (e.Index < 0 || e.Index >= list.Items.Count) return;
 
         var it = (Item)list.Items[e.Index];
-        double m = (DateTime.Now - it.Created).TotalMinutes;
+        bool active = it.Has(lastExternal);
+        // while focusing, the other items' clocks are frozen and they stay white
+        bool frozen = focusing && !active && !InFocus(it);
+        DateTime now = frozen ? (it.Created < focusStart ? focusStart : it.Created) : DateTime.Now;
+        double m = (now - it.Created).TotalMinutes;
 
         // active window's item = green; others white, one step redder per 10 min (max 6 steps)
-        bool active = it.Has(lastExternal);
-        float t = Math.Min(6, (int)(m / 10)) / 6f;
+        float t = frozen ? 0 : Math.Min(6, (int)(m / 10)) / 6f;
         Color fill = active ? GreenFill : Lerp(Color.White, RedFill, t);
         Color deep = active ? GreenDeep : Lerp(GrayDeep, RedDeep, t);
 
@@ -628,7 +695,7 @@ class PQForm : Form
 
         // age badge on the right
         int mins = (int)m;
-        string age = active ? "● 작업 중" : mins < 60 ? mins + "m" : (mins / 60) + "h" + (mins % 60).ToString("00");
+        string age = active ? (focusing ? "● 집중 중" : "● 작업 중") : mins < 60 ? mins + "m" : (mins / 60) + "h" + (mins % 60).ToString("00");
         var tf = TextFormatFlags.SingleLine | TextFormatFlags.NoPadding;
         Size asz = TextRenderer.MeasureText(g, age, ageFont, Size.Empty, tf);
         int bh = (int)(18 * s), bw = asz.Width + (int)(12 * s);
@@ -703,6 +770,263 @@ class PQForm : Form
         DeleteObject(rgn);
     }
 
+    // ---------- focus timer ----------
+
+    bool InFocus(Item it)
+    {
+        if (!focusing || it == null) return false;
+        if (it == focusItem) return true;
+        foreach (var w in it.Wins) if (focusWins.Contains(w.H)) return true;
+        return false;
+    }
+
+    // clicking another item while focusing: warn once, second click (within 6s) goes and resets the timer
+    void TrySwitch(Item it)
+    {
+        if (it == null) return;
+        if (focusing && !InFocus(it))
+        {
+            if (warnedItem != it || Environment.TickCount - warnTick > 6000)
+            {
+                warnedItem = it; warnTick = Environment.TickCount;
+                Note("⚠ 집중 중! 한 번 더 누르면 이동 + 초기화", true);
+                System.Media.SystemSounds.Exclamation.Play();
+                return;
+            }
+            StopFocus("이동해서 집중 초기화", true);
+        }
+        SwitchTo(it);
+    }
+
+    void SetFocusMin(int v)
+    {
+        focusMin = Math.Max(5, Math.Min(120, v));
+        try { File.WriteAllText(focusPath, focusMin.ToString()); } catch { }
+        bar.Invalidate();
+    }
+
+    void StartFocus()
+    {
+        IntPtr h = lastExternal;
+        if (h == IntPtr.Zero || !IsWindow(h)) { System.Media.SystemSounds.Beep.Play(); return; }
+        focusWins = new HashSet<IntPtr>(SnapGroup(h)); // the window you were in + windows snapped beside it
+        focusItem = null;
+        foreach (Item it in list.Items)
+            if (it.Has(h)) { focusItem = it; foreach (var w in it.Wins) if (w.H != IntPtr.Zero) focusWins.Add(w.H); break; }
+        focusing = true;
+        focusStart = DateTime.Now;
+        focusEnd = focusStart.AddMinutes(focusMin);
+        warnedItem = null;
+        barNoteUntil = DateTime.MinValue;
+        tick.Start();
+        bar.Invalidate(); list.Invalidate();
+        BackToWork();
+    }
+
+    // stop (reset) the focus timer; the time spent focusing doesn't count toward the other items' age
+    void StopFocus(string note, bool warn)
+    {
+        if (!focusing) return;
+        TimeSpan el = DateTime.Now - focusStart;
+        foreach (Item it in list.Items)
+            if (!InFocus(it)) it.Created = it.Created < focusStart ? it.Created + el : DateTime.Now;
+        focusing = false;
+        focusItem = null; warnedItem = null;
+        focusWins = new HashSet<IntPtr>();
+        if (note != null) Note(note, warn);
+        Save();
+        bar.Invalidate(); list.Invalidate();
+    }
+
+    void Note(string text, bool warn)
+    {
+        barNote = text; barWarn = warn;
+        barNoteUntil = DateTime.Now.AddSeconds(4);
+        tick.Start();
+        bar.Invalidate();
+    }
+
+    void OnTick(object o, EventArgs e)
+    {
+        var now = DateTime.Now;
+        if (focusing && now >= focusEnd)
+        {
+            StopFocus(null, false);
+            StartBreak();
+        }
+        if (breakForms != null)
+        {
+            if (now >= breakEnd) EndBreak();
+            else foreach (var f in breakForms)
+                {
+                    SetWindowPos(f.Handle, (IntPtr)(-1) /*HWND_TOPMOST*/, 0, 0, 0, 0, 0x1 | 0x2 | 0x10); // stay on top
+                    f.Invalidate();
+                }
+        }
+        bar.Invalidate();
+        if (!focusing && breakForms == null && now >= barNoteUntil) tick.Stop();
+    }
+
+    void BarMouseDown(object o, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left || breakForms != null) return;
+        if (focusing) { if (stopR.Contains(e.Location)) StopFocus("집중 중지", false); return; }
+        if (minusR.Contains(e.Location)) SetFocusMin(focusMin - 5);
+        else if (plusR.Contains(e.Location)) SetFocusMin(focusMin + 5);
+        else if (goR.Contains(e.Location))
+        {
+            StartFocus();
+            if (focusing && (ModifierKeys & Keys.Control) != 0) focusEnd = focusStart.AddSeconds(10); // Ctrl+click = 10s test run
+        }
+    }
+
+    static string Clock(double secs)
+    {
+        int t = (int)Math.Ceiling(Math.Max(0, secs));
+        return (t / 60) + ":" + (t % 60).ToString("00");
+    }
+
+    void Pill(Graphics g, Rectangle r, Color fill, Color fg, string text, Font f)
+    {
+        using (var p = Round(r, r.Height / 2))
+        using (var b = new SolidBrush(fill)) g.FillPath(b, p);
+        TextRenderer.DrawText(g, text, f, r, fg, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
+            TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+    }
+
+    void PaintBar(object o, PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        g.Clear(Bg);
+        var r = CardRect(new Rectangle(0, (int)(4 * s), bar.Width, bar.Height - (int)(4 * s)));
+        minusR = plusR = goR = stopR = Rectangle.Empty;
+        bool note = DateTime.Now < barNoteUntil;
+        var lf = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis;
+        int ph = (int)(20 * s), py = r.Y + (r.Height - ph) / 2;
+        Color lav = Color.FromArgb(232, 226, 246), lavDeep = Color.FromArgb(125, 105, 170);
+
+        using (var card = Round(r, (int)(9 * s)))
+        {
+            if (breakForms != null)
+            {
+                using (var b = new SolidBrush(lav)) g.FillPath(b, card);
+                TextRenderer.DrawText(g, "휴식 중  " + Clock((breakEnd - DateTime.Now).TotalSeconds), ageFont,
+                    new Rectangle(r.X + doneW, r.Y, r.Width - doneW * 2, r.Height), lavDeep, lf);
+                return;
+            }
+            if (focusing)
+            {
+                double total = (focusEnd - focusStart).TotalSeconds, left = (focusEnd - DateTime.Now).TotalSeconds;
+                float done = (float)Math.Max(0, Math.Min(1, 1 - left / total));
+                using (var b = new SolidBrush(Color.White)) g.FillPath(b, card);
+                var clip = g.Clip;
+                g.SetClip(card);
+                using (var b = new SolidBrush(GreenFill)) g.FillRectangle(b, r.X, r.Y, (int)(r.Width * done), r.Height + 1);
+                g.Clip = clip;
+                using (var pen = new Pen(barWarn && note ? RedDeep : GreenDeep, 1.4f * s)) g.DrawPath(pen, card);
+                int sw = (int)(54 * s);
+                stopR = new Rectangle(r.Right - sw - (int)(6 * s), py, sw, ph);
+                Pill(g, stopR, Color.FromArgb(235, 232, 240), GrayDeep, "■ 그만", ageFont);
+                string txt = note ? barNote : "집중  " + Clock(left) + "  남음";
+                TextRenderer.DrawText(g, txt, ageFont, new Rectangle(r.X + doneW, r.Y, stopR.X - r.X - doneW - (int)(4 * s), r.Height),
+                    note && barWarn ? RedDeep : GreenDeep, lf);
+                return;
+            }
+            // idle: [-] 30분 [+]      [▶ 집중 시작]
+            using (var b = new SolidBrush(Color.White)) g.FillPath(b, card);
+            using (var pen = new Pen(Color.FromArgb(215, 208, 222), 1f * s)) g.DrawPath(pen, card);
+            int gw = (int)(86 * s);
+            goR = new Rectangle(r.Right - gw - (int)(6 * s), py, gw, ph);
+            Pill(g, goR, GreenFill, GreenDeep, "▶ 집중 시작", ageFont);
+            if (note)
+            {
+                TextRenderer.DrawText(g, barNote, ageFont, new Rectangle(r.X + doneW, r.Y, goR.X - r.X - doneW - (int)(4 * s), r.Height),
+                    barWarn ? RedDeep : GreenDeep, lf);
+                return;
+            }
+            int bs = ph, x = r.X + (int)(8 * s);
+            minusR = new Rectangle(x, py, bs, bs);
+            Pill(g, minusR, Color.FromArgb(240, 236, 244), GrayDeep, "−", ageFont);
+            int lw = (int)(44 * s);
+            TextRenderer.DrawText(g, focusMin + "분", Font, new Rectangle(minusR.Right, r.Y, lw, r.Height), Ink,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+            plusR = new Rectangle(minusR.Right + lw, py, bs, bs);
+            Pill(g, plusR, Color.FromArgb(240, 236, 244), GrayDeep, "+", ageFont);
+        }
+    }
+
+    // ---------- break overlay ----------
+
+    void StartBreak()
+    {
+        breakStart = DateTime.Now;
+        breakEnd = breakStart.AddMinutes(BreakMin);
+        breakForms = new List<Overlay>();
+        foreach (var sc in Screen.AllScreens)
+        {
+            var f = new Overlay { Bounds = sc.Bounds, BackColor = Color.FromArgb(52, 46, 68) }; // opaque: actually rest
+            if (sc.Primary)
+            {
+                f.Paint += PaintBreak;
+                f.MouseDoubleClick += (o, e) => { if (skipR.Contains(e.Location)) EndBreak(); }; // emergency exit
+                f.MouseMove += (o, e) => f.Cursor = skipR.Contains(e.Location) ? Cursors.Hand : Cursors.Default;
+            }
+            breakForms.Add(f);
+            f.Show();
+            f.Bounds = sc.Bounds;
+        }
+        System.Media.SystemSounds.Asterisk.Play();
+        tick.Start();
+        bar.Invalidate();
+    }
+
+    void EndBreak()
+    {
+        if (breakForms == null) return;
+        var fs = breakForms;
+        breakForms = null;
+        foreach (var f in fs) { f.AllowClose = true; f.Close(); f.Dispose(); }
+        System.Media.SystemSounds.Asterisk.Play();
+        Note("휴식 끝! 다시 시작해볼까요", false);
+        BackToWork();
+    }
+
+    void PaintBreak(object o, PaintEventArgs e)
+    {
+        var f = (Form)o;
+        var g = e.Graphics;
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        int cw = (int)(420 * s), ch = (int)(250 * s);
+        var c = new Rectangle((f.ClientSize.Width - cw) / 2, (f.ClientSize.Height - ch) / 2, cw, ch);
+        using (var p = Round(c, (int)(24 * s)))
+        using (var b = new SolidBrush(Bg)) g.FillPath(b, p);
+        var cf = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine;
+        Color lavDeep = Color.FromArgb(125, 105, 170);
+        TextRenderer.DrawText(g, "휴식 시간", midFont, new Rectangle(c.X, c.Y + (int)(26 * s), c.Width, (int)(30 * s)), lavDeep, cf);
+        double left = (breakEnd - DateTime.Now).TotalSeconds;
+        TextRenderer.DrawText(g, Clock(left), bigFont, new Rectangle(c.X, c.Y + (int)(62 * s), c.Width, (int)(80 * s)), Ink, cf);
+        TextRenderer.DrawText(g, "화면에서 눈을 떼고, 일어나서 물 한 잔 + 스트레칭", Font,
+            new Rectangle(c.X, c.Y + (int)(150 * s), c.Width, (int)(24 * s)), Muted, cf);
+        // progress
+        var pr = new Rectangle(c.X + (int)(50 * s), c.Bottom - (int)(46 * s), c.Width - (int)(100 * s), (int)(8 * s));
+        float done = (float)Math.Max(0, Math.Min(1, 1 - left / (BreakMin * 60.0)));
+        using (var p = Round(pr, pr.Height / 2))
+        using (var b = new SolidBrush(Color.FromArgb(232, 226, 246))) g.FillPath(b, p);
+        if (done > 0.01f)
+        {
+            var pd = new Rectangle(pr.X, pr.Y, Math.Max(pr.Height, (int)(pr.Width * done)), pr.Height);
+            using (var p = Round(pd, pr.Height / 2))
+            using (var b = new SolidBrush(Color.FromArgb(180, 160, 220))) g.FillPath(b, p);
+        }
+        // small emergency exit at the bottom of the screen
+        string skip = "급한 일이면 여기를 더블클릭해서 건너뛰기";
+        var font = ageFont;
+        Size sz = TextRenderer.MeasureText(skip, font);
+        skipR = new Rectangle((f.ClientSize.Width - sz.Width) / 2 - (int)(10 * s), f.ClientSize.Height - (int)(70 * s), sz.Width + (int)(20 * s), (int)(28 * s));
+        TextRenderer.DrawText(g, skip, font, skipR, Color.FromArgb(120, 112, 140), cf);
+    }
+
     // ---------- opacity ----------
 
     ToolStripMenuItem OpacityMenu()
@@ -745,9 +1069,9 @@ class PQForm : Form
         int n = list.Items.Count;
         int ghost = ghostShown ? row : 0;
         int max = Screen.PrimaryScreen.WorkingArea.Height * 2 / 3;
-        int listH = Math.Min(n * row, max - header.Height - ghost - Padding.Vertical); // scrolls if very long
+        int listH = Math.Min(n * row, max - header.Height - ghost - bar.Height - Padding.Vertical); // scrolls if very long
         list.Height = Math.Max(0, listH);
-        Height = header.Height + list.Height + ghost + Padding.Vertical;
+        Height = header.Height + list.Height + ghost + bar.Height + Padding.Vertical;
     }
 
     // ---------- persistence: ticks \t hwnd \t proc \t title \t text ----------
