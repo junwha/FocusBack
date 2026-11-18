@@ -118,6 +118,15 @@ class PQForm : Form
     Point dragStart;
     Item dragItem; // card currently lifted
     Item mergeTarget; // card it would be grouped with if dropped now
+
+    // ---- sections (groups) + inline rename ----
+    TextBox editBox;
+    Action<string> editCommit;
+    Dictionary<int, string> groupNames = new Dictionary<int, string>();
+    string groupsPath;
+    int[] heights = new int[0];          // row heights computed by Relayout()
+    int HdrH { get { return (int)(26 * s); } }  // section header above the first card
+    int SecPad { get { return (int)(7 * s); } } // section padding below the last card / at the sides
     int dropTick;
 
     // last window the user was in that is not this widget (event-driven, no polling)
@@ -171,6 +180,7 @@ class PQForm : Form
         Directory.CreateDirectory(dir);
         path = Path.Combine(dir, "items.tsv");
         settingsPath = Path.Combine(dir, "opacity.txt");
+        groupsPath = Path.Combine(dir, "groups.tsv");
 
         using (var g = CreateGraphics()) s = g.DpiX / 96f;
         row = (int)(34 * s);
@@ -240,14 +250,22 @@ class PQForm : Form
         list = new ListBox
         {
             Dock = DockStyle.Top,
-            DrawMode = DrawMode.OwnerDrawFixed,
-            ItemHeight = row,
+            DrawMode = DrawMode.OwnerDrawVariable, // first/last card of a group gets room for the section frame
             BorderStyle = BorderStyle.None,
             BackColor = Bg,
             IntegralHeight = false,
             AllowDrop = true,
         };
         list.DrawItem += DrawItem;
+        list.MeasureItem += (o, e) => e.ItemHeight = RowHeight(e.Index);
+        editBox = new TextBox { BorderStyle = BorderStyle.None, Visible = false, ForeColor = Ink, Font = Font };
+        editBox.KeyDown += (o, e) =>
+        {
+            if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; EndEdit(true); }
+            else if (e.KeyCode == Keys.Escape) { e.SuppressKeyPress = true; EndEdit(false); }
+        };
+        editBox.LostFocus += (o, e) => EndEdit(true);
+        list.Controls.Add(editBox);
         list.MouseDown += (o, e) =>
         {
             // ListBox re-raises MouseDown/Up when items move under the cursor; ignore those while/just after dragging
@@ -312,6 +330,8 @@ class PQForm : Form
         Controls.Add(header);
 
         LoadItems();
+        NormalizeGroups();
+        Relayout();
         Fit();
         var wa = Screen.PrimaryScreen.WorkingArea;
         Location = new Point(wa.Right - Width - (int)(10 * s), wa.Top + (int)(44 * s)); // below title-bar buttons of maximized windows
@@ -605,6 +625,8 @@ class PQForm : Form
                 list.Items.Insert(to, dragItem);
                 list.SelectedIndex = to;
                 list.EndUpdate();
+                Relayout(); // sections follow the new order
+                Fit();
             }
             return;
         }
@@ -635,6 +657,7 @@ class PQForm : Form
         {
             var d = dragItem;
             dragItem = null;
+            bool newGroup = mergeTarget != null && mergeTarget.GroupId == 0;
             if (mergeTarget != null) JoinGroup(d, mergeTarget); // dropped onto a card -> group
             mergeTarget = null;
             NormalizeGroups(d);
@@ -642,14 +665,19 @@ class PQForm : Form
             dropTick = Environment.TickCount;
             list.Cursor = Cursors.Default;
             Changed();
+            if (newGroup && d.GroupId != 0) { int gid = d.GroupId; BeginInvoke((Action)(() => RenameGroup(gid))); } // name the new section
             return;
         }
         int i = list.IndexFromPoint(e.Location);
         bool click = dragIndex >= 0 && i == dragIndex;
         dragIndex = -1;
         if (!click) return;
+        var it = (Item)list.Items[i];
         if ((ModifierKeys & Keys.Shift) != 0) { list.SelectedIndex = i; RemoveSelected(); } // Shift+click = done
-        else if ((ModifierKeys & Keys.Control) == 0) TrySwitch((Item)list.Items[i]);      // Ctrl+click = just select
+        else if ((ModifierKeys & Keys.Control) != 0) { }                                   // Ctrl+click = just select
+        else if (FirstOfGroup(i) && e.Y < list.GetItemRectangle(i).Top + HdrH) RenameGroup(it.GroupId); // section header
+        else if (it.Has(lastExternal)) RenameItem(i);  // the task you're already in -> rename it
+        else TrySwitch(it);
     }
 
     void MoveSelected(int delta)
@@ -705,9 +733,38 @@ class PQForm : Form
         Color deep = active ? GreenDeep : Lerp(GrayDeep, RedDeep, t);
 
         g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-        var r = CardRect(e.Bounds);
         bool sel = (e.State & DrawItemState.Selected) != 0;
         bool lifted = it == dragItem;
+
+        // section: one rounded tinted box around the whole group; each row paints its slice of it
+        if (it.GroupId != 0)
+        {
+            Color gc = GroupColor(it.GroupId);
+            var sr = SectionRect(e.Index);
+            var clip = g.Clip;
+            g.SetClip(e.Bounds);
+            using (var p = Round(sr, (int)(13 * s)))
+            {
+                using (var b = new SolidBrush(Lerp(Bg, gc, 0.16f))) g.FillPath(b, p);
+                using (var pen = new Pen(Lerp(Bg, gc, 0.45f), 1.2f * s)) g.DrawPath(pen, p);
+            }
+            if (FirstOfGroup(e.Index))
+            {
+                int cnt = 0;
+                foreach (Item o2 in list.Items) if (SameGroup(o2, it)) cnt++;
+                var hr = new Rectangle(sr.X + (int)(12 * s), sr.Y + (int)(1 * s), sr.Width - (int)(24 * s), HdrH - (int)(4 * s));
+                string name = GroupName(it.GroupId);
+                var hf = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix;
+                if (editCommit == null || !editBox.Visible || editBox.Top > hr.Bottom || editBox.Bottom < hr.Top)
+                {
+                    TextRenderer.DrawText(g, name, ageFont, hr, Lerp(gc, Ink, 0.45f), hf);
+                    int nw = TextRenderer.MeasureText(g, name, ageFont, Size.Empty, hf | TextFormatFlags.NoPadding).Width;
+                    TextRenderer.DrawText(g, "· " + cnt, ageFont, new Rectangle(hr.X + nw + (int)(9 * s), hr.Y, (int)(40 * s), hr.Height), Lerp(gc, Bg, 0.25f), hf);
+                }
+            }
+            g.Clip = clip;
+        }
+        var r = CardRect(CardBounds(e.Index, e.Bounds));
         if (lifted)
         {
             // soft drop shadow + slightly inset card = "picked up"
@@ -728,16 +785,6 @@ class PQForm : Form
             }
         }
 
-        // group stripe on the left; it bridges the gap to neighbours of the same group
-        if (it.GroupId != 0 && !lifted)
-        {
-            int n = list.Items.Count;
-            bool up = e.Index > 0 && SameGroup((Item)list.Items[e.Index - 1], it);
-            bool down = e.Index + 1 < n && SameGroup((Item)list.Items[e.Index + 1], it);
-            int sx = r.X + (int)(4 * s), sw = Math.Max(2, (int)(3 * s));
-            int top = up ? e.Bounds.Top : r.Y + (int)(6 * s), bot = down ? e.Bounds.Bottom : r.Bottom - (int)(6 * s);
-            using (var b = new SolidBrush(GroupColor(it.GroupId))) g.FillRectangle(b, sx, top, sw, bot - top);
-        }
 
         // age badge on the right
         int mins = (int)m;
@@ -758,7 +805,7 @@ class PQForm : Form
             TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
     }
 
-    void Changed() { Save(); UpdateGhost(); UpdateBarItem(); Fit(); list.Invalidate(); }
+    void Changed() { Save(); Relayout(); UpdateGhost(); UpdateBarItem(); Fit(); list.Invalidate(); }
 
     // same card shape for items and the ghost entry
     Rectangle CardRect(Rectangle b)
@@ -918,6 +965,101 @@ class PQForm : Form
             if (!up && !down) lone.Add(it);
         }
         foreach (var it in lone) it.GroupId = 0;
+    }
+
+    bool FirstOfGroup(int i) { var it = (Item)list.Items[i]; return it.GroupId != 0 && (i == 0 || !SameGroup((Item)list.Items[i - 1], it)); }
+    bool LastOfGroup(int i) { var it = (Item)list.Items[i]; return it.GroupId != 0 && (i + 1 >= list.Items.Count || !SameGroup((Item)list.Items[i + 1], it)); }
+
+    int RowHeight(int i) { return i >= 0 && i < heights.Length ? heights[i] : row; }
+
+    // recompute row heights (section header / bottom padding) and re-add the items so the ListBox re-measures
+    void Relayout()
+    {
+        int n = list.Items.Count;
+        var items = new object[n];
+        list.Items.CopyTo(items, 0);
+        var h = new int[n];
+        for (int i = 0; i < n; i++) h[i] = row + (FirstOfGroup(i) ? HdrH : 0) + (LastOfGroup(i) ? SecPad : 0);
+        bool same = h.Length == heights.Length;
+        for (int i = 0; same && i < n; i++) same = h[i] == heights[i];
+        if (same) return;
+        heights = h;
+        object sel = list.SelectedItem;
+        int top = list.TopIndex;
+        list.BeginUpdate();
+        list.Items.Clear();
+        list.Items.AddRange(items);
+        if (sel != null) list.SelectedItem = sel;
+        list.TopIndex = Math.Min(top, Math.Max(0, n - 1));
+        list.EndUpdate();
+    }
+
+    string GroupName(int g) { string n; return groupNames.TryGetValue(g, out n) && n.Length > 0 ? n : "묶음"; }
+
+    // section rectangle (list coordinates) of the group containing row i
+    Rectangle SectionRect(int i)
+    {
+        int a = i, b = i;
+        while (a > 0 && SameGroup((Item)list.Items[a - 1], (Item)list.Items[i])) a--;
+        while (b + 1 < list.Items.Count && SameGroup((Item)list.Items[b + 1], (Item)list.Items[i])) b++;
+        Rectangle ra = list.GetItemRectangle(a), rb = list.GetItemRectangle(b);
+        int top = ra.Top + (FirstOfGroup(a) ? (int)(3 * s) : 0);
+        return Rectangle.FromLTRB(0, top, list.Width - 1, rb.Bottom - (LastOfGroup(b) ? (int)(1 * s) : 0));
+    }
+
+    // ---- inline edit (item text / section name) ----
+    void BeginEdit(Rectangle rc, string text, Color back, Action<string> commit)
+    {
+        EndEdit(false);
+        editCommit = commit;
+        editBox.BackColor = back;
+        editBox.Text = text;
+        int h = editBox.PreferredHeight;
+        editBox.SetBounds(rc.X, rc.Y + (rc.Height - h) / 2 + (int)(1 * s), rc.Width, h);
+        editBox.Visible = true;
+        Activate();
+        editBox.Focus();
+        editBox.SelectAll();
+    }
+
+    void EndEdit(bool commit)
+    {
+        if (editCommit == null) return;
+        var c = editCommit; editCommit = null;
+        string t = editBox.Text.Trim().Replace('\t', ' ');
+        editBox.Visible = false;
+        if (commit && t.Length > 0) c(t);
+        list.Invalidate();
+        BackToWork();
+    }
+
+    void RenameItem(int i)
+    {
+        var it = (Item)list.Items[i];
+        var r = CardRect(CardBounds(i, list.GetItemRectangle(i)));
+        int x = r.X + doneW + TextRenderer.MeasureText((i + 1) + "   ", list.Font).Width - (int)(3 * s);
+        BeginEdit(new Rectangle(x, r.Y, r.Right - x - (int)(70 * s), r.Height), it.Text, GreenFill,
+            t => { it.Text = t; Changed(); });
+    }
+
+    void RenameGroup(int g)
+    {
+        int first = -1;
+        for (int i = 0; i < list.Items.Count; i++) if (((Item)list.Items[i]).GroupId == g) { first = i; break; }
+        if (first < 0) return;
+        var sr = SectionRect(first);
+        var rc = new Rectangle(sr.X + (int)(12 * s), sr.Y + (int)(2 * s), sr.Width - (int)(60 * s), HdrH - (int)(5 * s));
+        BeginEdit(rc, GroupName(g), Lerp(Bg, GroupColor(g), 0.16f), t => { groupNames[g] = t; Save(); list.Invalidate(); });
+    }
+
+    // where the card sits inside its row (rows of a group leave room for the section frame)
+    Rectangle CardBounds(int i, Rectangle b)
+    {
+        var it = (Item)list.Items[i];
+        if (it.GroupId == 0) return b;
+        int top = FirstOfGroup(i) ? HdrH : 0, bot = LastOfGroup(i) ? SecPad : 0;
+        int pad = SecPad;
+        return new Rectangle(b.X + pad, b.Y + top, b.Width - pad * 2, b.Height - top - bot);
     }
 
     static readonly Color[] GroupColors = {
@@ -1214,7 +1356,9 @@ class PQForm : Form
         int n = list.Items.Count;
         int ghost = ghostShown ? row : 0;
         int max = Screen.PrimaryScreen.WorkingArea.Height * 2 / 3;
-        int listH = Math.Min(n * row, max - header.Height - ghost - bar.Height - Padding.Vertical); // scrolls if very long
+        int total = 0;
+        for (int i = 0; i < n; i++) total += RowHeight(i);
+        int listH = Math.Min(total, max - header.Height - ghost - bar.Height - Padding.Vertical); // scrolls if very long
         list.Height = Math.Max(0, listH);
         Height = header.Height + list.Height + ghost + bar.Height + Padding.Vertical;
     }
@@ -1226,6 +1370,16 @@ class PQForm : Form
 
     void LoadItems()
     {
+        try // section names: id \t name
+        {
+            if (File.Exists(groupsPath))
+                foreach (var gl in File.ReadAllLines(groupsPath, Encoding.UTF8))
+                {
+                    var gf = gl.Split('\t'); int gid;
+                    if (gf.Length >= 2 && int.TryParse(gf[0], out gid)) groupNames[gid] = gf[1];
+                }
+        }
+        catch { }
         if (!File.Exists(path)) return;
         foreach (var line in File.ReadAllLines(path, Encoding.UTF8))
         {
@@ -1272,6 +1426,12 @@ class PQForm : Form
         string tmp = path + ".tmp";
         File.WriteAllText(tmp, sb.ToString(), Encoding.UTF8);
         if (File.Exists(path)) File.Replace(tmp, path, null); else File.Move(tmp, path);
+        // names of sections still in use
+        var used = new HashSet<int>();
+        foreach (Item it in list.Items) if (it.GroupId != 0) used.Add(it.GroupId);
+        var gs = new StringBuilder();
+        foreach (var kv in groupNames) if (used.Contains(kv.Key)) gs.Append(kv.Key).Append('\t').Append(Clean(kv.Value)).Append('\n');
+        try { File.WriteAllText(groupsPath, gs.ToString(), Encoding.UTF8); } catch { }
     }
 
     [STAThread]
