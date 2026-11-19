@@ -23,7 +23,9 @@ It sits in the top-right corner of the screen, shows what you're working on and 
 
 **macOS**
 1. Open `FocusQueue-macOS.dmg` and drag **FocusQueue** onto **Applications**.
-2. The first time, **right-click FocusQueue in Applications → Open** (the app isn't notarized).
+2. The first time, macOS says it *could not verify "FocusQueue" is free of malware*. That's because the app isn't signed with a paid Apple Developer ID yet. Click **Done**, open **System Settings → Privacy & Security**, scroll down, click **Open Anyway** next to FocusQueue, and confirm. You only do this once.
+   - Or, in Terminal: `xattr -dr com.apple.quarantine /Applications/FocusQueue.app`
+   - On macOS 14 and earlier, **right-click → Open** also works.
 3. Allow FocusQueue in **System Settings → Privacy & Security → Accessibility** so tasks can follow individual windows (without it, they follow whole apps).
 
 Your data never leaves your computer (see [Data](#data)).
