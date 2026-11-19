@@ -1,51 +1,66 @@
 # ADHDTimer
 
-ADHD를 위한 아주 작은 **우선순위 큐 + 집중 타이머** 위젯입니다.
-화면 우측 상단에 떠 있으면서, 지금 하고 있는 일과 오래 방치된 일을 보여주고, 집중/휴식 사이클을 강제로 지켜줍니다.
+A tiny always-on-top **task queue + focus timer** widget.
+It sits in the top-right corner of the screen, shows what you're working on and what has been waiting the longest, and walks you through focus/break cycles.
 
-> 현재는 **Windows** 버전(`PQ.cs`, 단일 파일 C# WinForms)만 있습니다. macOS 버전은 작업 중입니다.
+> Currently **Windows** only (`PQ.cs`, a single-file C# WinForms app). A macOS version is in progress.
 
-## 기능
+The UI is available in **English** and **Korean**. It follows the system display language by default; switch any time from the right-click menu → **Language**.
 
-### 할 일 큐
-- 입력칸에 할 일을 적으면 **지금 보고 있는 창**과 연결됩니다. 그 창에 있으면 "작업 중"으로 표시됩니다.
-- 오래 손대지 않은 일은 점점 빨갛게 변합니다.
-- 메모, 드래그로 순서 바꾸기, 투명도 조절.
-- 할 일을 다른 할 일 위에 끌어다 놓으면 **묶음(섹션)** 이 됩니다. 묶음 안의 창들 사이를 오가는 건 같은 작업으로 칩니다.
-- 지금 작업 중인 항목을 한 번 더 클릭하면 이름 수정, 섹션 헤더 클릭으로 묶음 이름 수정.
+## Features
 
-### 집중 타이머
-- 할 일마다 회차가 쌓입니다: **1회차 15분/3분 휴식 → 2회차 30/5 → 3회차 이후 60/15**. `<` `>` 로 회차 이동.
-- 집중 중에는 다른 항목이 빨개지지 않습니다.
-- 다른 작업으로 이동하면 화면 가운데에 **1분 유예 타이머**가 뜨고, 1분 안에 돌아오면 이어서 집중합니다.
-- 집중이 끝나면 **전체 화면 휴식**이 뜹니다.
-  - `+5분 더 집중`: 같은 작업으로 5분 연장(바 시간은 이어서 쌓임), 끝나면 다시 휴식.
-  - `백그라운드로 쉬기`: 휴식 화면을 숨기고, 끝나기 **10초 전**에 가운데 알림.
-  - 급할 때는 하단 문구 더블클릭으로 건너뛰기.
+### Task queue
+- Type a task in the input card and it gets linked to the **window you're in**. While you're in that window the task shows as *working*.
+- Tasks you haven't touched in a while slowly turn red.
+- Notes, drag to reorder, adjustable opacity.
+- Drop a task onto another task to make a **group** (a rounded section). Moving between the windows of a group counts as the same task.
+- Click the current task again to rename it; click a section header to rename the group.
 
-### 기록과 통계
-- 모든 집중 세션이 `%APPDATA%\ADHD-PQ\focus_log.csv` 에 기록됩니다.
-  열: `시작, 끝, 집중(분), 할 일, 묶음, 회차, 계획(분), 종류(기본/연장), 결과(완료/중지/이탈/종료)`
-- 우클릭 → **통계 보기**: 기간별 총 집중, 세션 수, 완료율, 일별/시간대별 그래프, 할 일별 집중 시간, 최근 세션.
-- `PQ.exe --stats` 로 통계 창만 바로 열 수 있습니다.
+### Focus timer
+- Each task has rounds: **round 1: 15 min focus / 3 min break → round 2: 30 / 5 → round 3+: 60 / 15**. Use `<` `>` to change the round.
+- While focusing, other tasks don't age.
+- Switching to an unrelated window shows a centered **1-minute grace timer**; come back within a minute and the session continues.
+- When a session ends, a **full-screen break** covers the screen.
+  - `+5 min focus`: keep going on the same task for 5 more minutes (the bar keeps the time already focused), then the break comes back.
+  - `Rest in background`: hide the break screen; a centered alert appears **10 seconds** before the break ends.
+  - In an emergency, double-click the text at the bottom to skip the break.
 
-## 빌드 (Windows)
+### Log and stats
+- Every focus session is appended to `focus_log.csv` (see below).
+- Right-click → **Stats**: total focus, sessions, completion rate, focus per day / per hour, focus by task, and recent sessions, for today / 7 days / 30 days / all time.
+- `PQ.exe --stats` opens the stats window directly.
 
-.NET Framework 4 에 포함된 `csc.exe` 만 있으면 됩니다. 별도 설치 불필요.
+## Build (Windows)
+
+Only needs `csc.exe`, which ships with .NET Framework 4. Nothing to install.
 
 ```bat
 build.bat
 ```
 
-`PQ.exe` 가 생성됩니다. 실행 중인 위젯을 다시 실행하면 화면 밖으로 사라진 위젯을 다시 불러옵니다.
+This produces `PQ.exe`. Hotkey: `Ctrl+Alt+Space`. Launching it again while it's running brings the widget back on screen.
 
-## 데이터 위치
+## Data
 
-`%APPDATA%\ADHD-PQ\`
+All data stays on your machine, in `%APPDATA%\ADHD-PQ\`. Nothing is sent anywhere.
 
-| 파일 | 내용 |
+| File | Contents |
 |---|---|
-| `items.tsv` | 할 일 큐 (연결된 창, 회차, 묶음) |
-| `groups.tsv` | 묶음 이름 |
-| `focus_log.csv` | 집중 기록 (UTF-8 BOM, 엑셀에서 바로 열림) |
-| `opacity.txt` | 투명도 |
+| `items.tsv` | the task queue (linked windows, rounds, groups) |
+| `groups.tsv` | group names |
+| `focus_log.csv` | focus log (UTF-8 with BOM, opens in Excel) |
+| `opacity.txt`, `lang.txt` | settings |
+
+`focus_log.csv` columns:
+
+| column | meaning |
+|---|---|
+| `start`, `end` | `yyyy-MM-dd HH:mm:ss`, local time |
+| `minutes` | focused minutes, excluding time spent away |
+| `task`, `group` | task and group name |
+| `round` | 1, 2, 3 |
+| `planned_min` | planned length of the segment |
+| `kind` | `focus` or `extension` (+5 min) |
+| `outcome` | `done`, `stopped`, `left` (didn't come back within 1 min), `quit` (widget closed) |
+
+Segments shorter than 30 seconds are not logged.

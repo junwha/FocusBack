@@ -1,4 +1,4 @@
-// ADHD Priority Queue - tiny always-on-top widget (top-right).
+// Focus Queue - tiny always-on-top task queue + focus timer widget (top-right).
 // Build: build.bat  (uses the C# compiler built into Windows, no installs)
 using System;
 using System.Collections.Generic;
@@ -56,6 +56,13 @@ class Toast : Form
     {
         get { var cp = base.CreateParams; cp.ExStyle |= 0x80 | 0x8 | 0x08000000; return cp; } // TOOLWINDOW|TOPMOST|NOACTIVATE
     }
+}
+
+// UI language: English or Korean. Default follows the Windows display language; switch from the menu.
+static class Lang
+{
+    public static bool Ko;
+    public static string T(string en, string ko) { return Ko ? ko : en; }
 }
 
 class Overlay : Form
@@ -116,9 +123,11 @@ class PQForm : Form
     readonly TextBox input;
     readonly Panel inputBox;
     readonly Font ageFont;
-    readonly ContextMenuStrip menu;
+    readonly ContextMenuStrip menu, hmenu;
 
     // first installed font wins (Korean-friendly first)
+    static string T(string en, string ko) { return Lang.T(en, ko); }
+
     static Font Pick(float size, params string[] names)
     {
         foreach (var n in names)
@@ -185,7 +194,7 @@ class PQForm : Form
     DateTime freezeFrom;   // start of the current segment (others' clocks frozen from here; logged from here)
     double pausedSec;      // paused (away) seconds inside the current segment
     int plannedMin;        // planned length of the current segment
-    bool extension;        // current segment is a "+5분" extension
+    bool extension;        // current segment is a "+5 min" extension
     DateTime doneStart, doneEnd; // finished session, so an extension continues its bar
     HashSet<IntPtr> focusWins = new HashSet<IntPtr>();
     Item focusItem;
@@ -205,11 +214,14 @@ class PQForm : Form
         settingsPath = Path.Combine(dir, "opacity.txt");
         groupsPath = Path.Combine(dir, "groups.tsv");
         logPath = Path.Combine(dir, "focus_log.csv");
+        langPath = Path.Combine(dir, "lang.txt");
+        LoadLang();
+        MigrateLog();
 
         using (var g = CreateGraphics()) s = g.DpiX / 96f;
         row = (int)(34 * s);
         doneW = (int)(12 * s); // left inner padding of a row
-        ageFont = Pick(8.5f, "Pretendard SemiBold", "Noto Sans KR Medium", "Segoe UI Semibold"); // needs Hangul for "작업 중"
+        ageFont = Pick(8.5f, "Pretendard SemiBold", "Noto Sans KR Medium", "Segoe UI Semibold"); // needs Hangul for Korean mode
 
         FormBorderStyle = FormBorderStyle.None;
         TopMost = true;
@@ -225,7 +237,7 @@ class PQForm : Form
         {
             Dock = DockStyle.Top,
             Height = (int)(22 * s),
-            Text = "✿  할 일    Ctrl+Alt+Space",
+            Text = HeaderText(),
             ForeColor = Muted,
             Font = Pick(8f, "Pretendard", "Noto Sans KR", "Malgun Gothic"),
             TextAlign = ContentAlignment.MiddleLeft,
@@ -269,7 +281,7 @@ class PQForm : Form
         input.GotFocus += (o, e) => inputBox.Invalidate();
         input.LostFocus += (o, e) => { forceGhost = false; BeginInvoke((Action)UpdateGhost); }; // after focus settles
         input.KeyDown += InputKeyDown;
-        input.HandleCreated += (o, e) => SendMessage(input.Handle, 0x1501, (IntPtr)1, "+ 이 창의 할 일");
+        input.HandleCreated += (o, e) => SetCue();
 
         list = new ListBox
         {
@@ -305,36 +317,10 @@ class PQForm : Form
         tip = new ToolTip { InitialDelay = 400, ShowAlways = true };
 
         // right-click = this menu; Shift+click = done
-        menu = new ContextMenuStrip { Font = Pick(9f, "Pretendard", "Noto Sans KR", "Malgun Gothic") };
-        menu.Items.Add("이 창으로 이동 (클릭 / Enter)", null, (o, e) => TrySwitch(list.SelectedItem as Item));
-        menu.Items.Add("완료 (Shift+클릭 / Del)", null, (o, e) => RemoveSelected());
-        menu.Items.Add("+ 직전 창도 이 할 일에 연결", null, (o, e) => AddWindow(list.SelectedItem as Item, lastExternal));
-        menu.Items.Add("창 연결 다시 하기 (직전 창 + 옆 창)", null, (o, e) =>
-        {
-            var it = list.SelectedItem as Item;
-            if (it != null) { Attach(it, lastExternal); Changed(); }
-        });
-        var leave = new ToolStripMenuItem("묶음에서 빼기", null, (o, e) => LeaveGroup(list.SelectedItem as Item));
-        menu.Items.Add(leave);
-        menu.Opening += (o, e) => { var it = list.SelectedItem as Item; leave.Visible = it != null && it.GroupId != 0; };
-        menu.Items.Add("맨 위로", null, (o, e) => MoveSelected(-list.SelectedIndex));
-        menu.Items.Add("타이머 리셋", null, (o, e) => ResetSelected());
-        menu.Items.Add("집중 회차 처음으로 (15분부터)", null, (o, e) =>
-        {
-            var it = list.SelectedItem as Item;
-            if (it != null) { SetTaskSessions(it, 0); if (it == barItem || SameGroup(it, barItem)) selTier = 0; Changed(); bar.Invalidate(); }
-        });
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("통계 보기", null, (o, e) => OpenStats());
-        menu.Items.Add("기록 시트 열기 (CSV)", null, (o, e) => OpenLogSheet());
-        menu.Items.Add(OpacityMenu());
-        menu.Items.Add("종료", null, (o, e) => Close());
-        var hmenu = new ContextMenuStrip { Font = menu.Font };
-        hmenu.Items.Add("통계 보기", null, (o, e) => OpenStats());
-        hmenu.Items.Add("기록 시트 열기 (CSV)", null, (o, e) => OpenLogSheet());
-        hmenu.Items.Add(OpacityMenu());
-        hmenu.Items.Add("종료", null, (o, e) => Close());
+        menu = new ContextMenuStrip { Font = Pick(9f, "Pretendard", "Noto Sans KR", "Segoe UI", "Malgun Gothic") };
+        hmenu = new ContextMenuStrip { Font = menu.Font };
         header.ContextMenuStrip = hmenu;
+        BuildMenus();
 
         // focus timer bar at the bottom
         bar = new DBPanel { Dock = DockStyle.Top, Height = row + (int)(4 * s), BackColor = Bg };
@@ -576,7 +562,7 @@ class PQForm : Form
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
-        StopFocus(null, false, "종료"); // log a running session when the widget closes
+        StopFocus(null, false, "quit"); // log a running session when the widget closes
         UnregisterHotKey(Handle, 1);
         if (hook != IntPtr.Zero) UnhookWinEvent(hook);
         base.OnFormClosed(e);
@@ -686,7 +672,7 @@ class PQForm : Form
         var it = (Item)list.Items[i];
         var where = new StringBuilder();
         foreach (var w in it.Wins) where.Append("\n→ ").Append(w.Proc).Append(" — ").Append(w.Title);
-        if (it.Wins.Count == 0) where.Append("\n→ (연결된 창 없음)");
+        if (it.Wins.Count == 0) where.Append("\n→ " + T("(no linked window)", "(연결된 창 없음)"));
         tip.Show(it.Text + where, list, e.X + (int)(12 * s), e.Y + (int)(16 * s), 5000);
     }
 
@@ -769,7 +755,7 @@ class PQForm : Form
         if (e.Index < 0 || e.Index >= list.Items.Count) return;
 
         var it = (Item)list.Items[e.Index];
-        bool active = GHas(it, lastExternal); // whole group shows 작업 중
+        bool active = GHas(it, lastExternal); // whole group shows "working"
         // while focusing, the other items' clocks are frozen and they stay white
         bool frozen = focusing && !active && !InFocus(it);
         DateTime now = frozen ? (it.Created < freezeFrom ? freezeFrom : it.Created) : DateTime.Now;
@@ -836,7 +822,7 @@ class PQForm : Form
 
         // age badge on the right
         int mins = (int)m;
-        string age = active ? (focusing ? "● 집중 중" : "● 작업 중") : mins < 60 ? mins + "m" : (mins / 60) + "h" + (mins % 60).ToString("00");
+        string age = active ? (focusing ? T("● focusing", "● 집중 중") : T("● working", "● 작업 중")) : mins < 60 ? mins + "m" : (mins / 60) + "h" + (mins % 60).ToString("00");
         var tf = TextFormatFlags.SingleLine | TextFormatFlags.NoPadding;
         Size asz = TextRenderer.MeasureText(g, age, ageFont, Size.Empty, tf);
         int bh = (int)(18 * s), bw = asz.Width + (int)(12 * s);
@@ -964,7 +950,7 @@ class PQForm : Form
             if (warnedItem != it || Environment.TickCount - warnTick > 6000)
             {
                 warnedItem = it; warnTick = Environment.TickCount;
-                Note("⚠ 집중 중! 한 번 더 누르면 이동 (1분 유예)", true);
+                Note(T("⚠ Focusing! Click again to switch (1 min grace)", "⚠ 집중 중! 한 번 더 누르면 이동 (1분 유예)"), true);
                 System.Media.SystemSounds.Exclamation.Play();
                 return;
             }
@@ -1090,7 +1076,7 @@ class PQForm : Form
         list.EndUpdate();
     }
 
-    string GroupName(int g) { string n; return groupNames.TryGetValue(g, out n) && n.Length > 0 ? n : "묶음"; }
+    string GroupName(int g) { string n; return groupNames.TryGetValue(g, out n) && n.Length > 0 ? n : T("Group", "묶음"); }
 
     // section rectangle (list coordinates) of the group containing row i
     Rectangle SectionRect(int i)
@@ -1206,7 +1192,49 @@ class PQForm : Form
     // ---------- focus log (CSV sheet) + stats dashboard ----------
 
     string logPath;
-    const string LogHeader = "시작,끝,집중(분),할 일,묶음,회차,계획(분),종류,결과";
+    const string LogHeader = "start,end,minutes,task,group,round,planned_min,kind,outcome";
+    // kind: focus | extension    outcome: done | stopped | left | quit
+
+    static readonly Dictionary<string, string> OldLogCodes = new Dictionary<string, string> {
+        { "기본", "focus" }, { "연장", "extension" }, { "완료", "done" }, { "중지", "stopped" }, { "이탈", "left" }, { "종료", "quit" } };
+
+    static string Code(string v) { string c; return OldLogCodes.TryGetValue(v, out c) ? c : v; }
+
+    static string OutcomeLabel(string o)
+    {
+        switch (o)
+        {
+            case "done": return T("done", "완료");
+            case "stopped": return T("stopped", "중지");
+            case "left": return T("left", "이탈");
+            case "quit": return T("closed", "종료");
+        }
+        return o;
+    }
+
+    // logs from older versions used Korean headers/values: rewrite once with the language-neutral codes (backup kept)
+    void MigrateLog()
+    {
+        try
+        {
+            if (!File.Exists(logPath)) return;
+            string text = File.ReadAllText(logPath, Encoding.UTF8);
+            if (!text.TrimStart('\uFEFF').StartsWith("시작,")) return;
+            File.Copy(logPath, Path.ChangeExtension(logPath, ".ko.bak.csv"), true);
+            var sb = new StringBuilder(LogHeader + "\r\n");
+            var rows = ParseCsv(text);
+            for (int i = 1; i < rows.Count; i++)
+            {
+                var r = rows[i];
+                if (r.Length >= 9) { r[7] = Code(r[7]); r[8] = Code(r[8]); }
+                var cells = new List<string>();
+                foreach (var c in r) cells.Add(Csv(c));
+                sb.Append(string.Join(",", cells.ToArray())).Append("\r\n");
+            }
+            File.WriteAllText(logPath, sb.ToString(), new UTF8Encoding(true));
+        }
+        catch { }
+    }
 
     static string Csv(string v)
     {
@@ -1224,14 +1252,14 @@ class PQForm : Form
             if (min < 0.5) return; // ignore accidental starts
             Item it = focusItem;
             if (it == null) foreach (var ft in FocusTask()) { it = ft; break; }
-            string task = it != null ? it.Text : "(할 일 없음)";
+            string task = it != null ? it.Text : T("(no task)", "(할 일 없음)");
             string grp = it != null && it.GroupId != 0 ? GroupName(it.GroupId) : "";
             var inv = System.Globalization.CultureInfo.InvariantCulture;
             string line = string.Join(",", new[] {
                 freezeFrom.ToString("yyyy-MM-dd HH:mm:ss"), end.ToString("yyyy-MM-dd HH:mm:ss"),
                 min.ToString("0.0", inv), Csv(task), Csv(grp), (focusTier + 1).ToString(),
-                plannedMin.ToString(), extension ? "연장" : "기본", outcome });
-            if (!File.Exists(logPath)) File.WriteAllText(logPath, LogHeader + "\r\n", new UTF8Encoding(true)); // BOM: Excel reads Korean
+                plannedMin.ToString(), extension ? "extension" : "focus", outcome });
+            if (!File.Exists(logPath)) File.WriteAllText(logPath, LogHeader + "\r\n", new UTF8Encoding(true)); // BOM: Excel reads non-ASCII task names
             File.AppendAllText(logPath, line + "\r\n", new UTF8Encoding(false));
         }
         catch { }
@@ -1254,7 +1282,7 @@ class PQForm : Form
             if (!File.Exists(logPath)) File.WriteAllText(logPath, LogHeader + "\r\n", new UTF8Encoding(true));
             Process.Start(logPath);
         }
-        catch (Exception ex) { MessageBox.Show(ex.Message, "기록 시트"); }
+        catch (Exception ex) { MessageBox.Show(ex.Message, T("Log sheet", "기록 시트")); }
     }
 
     // ---- left the task while focusing: pause, show a centered 1-minute warning ----
@@ -1280,7 +1308,7 @@ class PQForm : Form
             awayForm.MouseDown += (o, e) =>
             {
                 if (backR.Contains(e.Location)) { if (awayHome != IntPtr.Zero && IsWindow(awayHome)) SetForegroundWindow(awayHome); }
-                else if (quitR.Contains(e.Location)) StopFocus("집중 중지", false);
+                else if (quitR.Contains(e.Location)) StopFocus(T("Focus stopped", "집중 중지"), false);
             };
             awayForm.MouseMove += (o, e) => awayForm.Cursor = backR.Contains(e.Location) || quitR.Contains(e.Location) ? Cursors.Hand : Cursors.Default;
         }
@@ -1298,7 +1326,7 @@ class PQForm : Form
         away = false;
         if (resume) { focusEnd += DateTime.Now - awayStart; pausedSec += (DateTime.Now - awayStart).TotalSeconds; } // paused time doesn't count
         if (awayForm != null) awayForm.Hide();
-        if (resume) Note("돌아왔어요 · 집중 이어서", false);
+        if (resume) Note(T("Welcome back · focus continues", "돌아왔어요 · 집중 이어서"), false);
         bar.Invalidate();
     }
 
@@ -1310,20 +1338,20 @@ class PQForm : Form
         using (var p = Round(new Rectangle(0, 0, f.Width - 1, f.Height - 1), (int)(11 * s)))
         using (var pen = new Pen(RedFill, 2.4f * s)) g.DrawPath(pen, p);
         var cf = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine;
-        TextRenderer.DrawText(g, "⏸  집중 중이에요", midFont, new Rectangle(0, (int)(14 * s), f.Width, (int)(28 * s)), RedDeep, cf);
+        TextRenderer.DrawText(g, T("⏸  You're focusing", "⏸  집중 중이에요"), midFont, new Rectangle(0, (int)(14 * s), f.Width, (int)(28 * s)), RedDeep, cf);
         double left = AwaySec - (DateTime.Now - awayStart).TotalSeconds;
         using (var big = new Font(bigFont.FontFamily, 26f))
             TextRenderer.DrawText(g, Clock(left), big, new Rectangle(0, (int)(42 * s), f.Width, (int)(50 * s)), Ink, cf);
-        TextRenderer.DrawText(g, "1분 안에 돌아가면 타이머가 이어져요", Font, new Rectangle(0, (int)(92 * s), f.Width, (int)(22 * s)), Muted, cf);
+        TextRenderer.DrawText(g, T("Come back within 1 min to keep the timer", "1분 안에 돌아가면 타이머가 이어져요"), Font, new Rectangle(0, (int)(92 * s), f.Width, (int)(22 * s)), Muted, cf);
         int bw = (int)(120 * s), bh = (int)(26 * s), y = f.Height - bh - (int)(14 * s), gap = (int)(10 * s);
         backR = new Rectangle(f.Width / 2 - bw - gap / 2, y, bw, bh);
         quitR = new Rectangle(f.Width / 2 + gap / 2, y, bw, bh);
-        Pill(g, backR, GreenFill, GreenDeep, "↩ 돌아가기", ageFont);
-        Pill(g, quitR, Color.FromArgb(235, 232, 240), GrayDeep, "■ 그만하기", ageFont);
+        Pill(g, backR, GreenFill, GreenDeep, T("↩ Go back", "↩ 돌아가기"), ageFont);
+        Pill(g, quitR, Color.FromArgb(235, 232, 240), GrayDeep, T("■ Stop", "■ 그만하기"), ageFont);
     }
 
     // stop (reset) the focus timer; the time spent focusing doesn't count toward the other items' age
-    void StopFocus(string note, bool warn, string outcome = "중지")
+    void StopFocus(string note, bool warn, string outcome = "stopped")
     {
         if (!focusing) return;
         LogSession(outcome); // before clearing away state: time away isn't focus time
@@ -1352,7 +1380,7 @@ class PQForm : Form
         var now = DateTime.Now;
         if (away)
         {
-            if ((now - awayStart).TotalSeconds >= AwaySec) StopFocus("1분 안에 안 돌아와서 집중 초기화", true, "이탈");
+            if ((now - awayStart).TotalSeconds >= AwaySec) StopFocus(T("Didn't come back within 1 min · focus reset", "1분 안에 안 돌아와서 집중 초기화"), true, "left");
             else if (awayForm != null) awayForm.Invalidate();
         }
         if (focusing && !away && now >= focusEnd)
@@ -1361,7 +1389,7 @@ class PQForm : Form
             lastFocusItem = focusItem;
             doneWins = focusWins; doneItem = focusItem; doneTier = focusTier;
             doneStart = focusStart; doneEnd = now;
-            StopFocus(null, false, "완료");
+            StopFocus(null, false, "done");
             barItem = null; UpdateBarItem();
             StartBreak();
         }
@@ -1388,7 +1416,7 @@ class PQForm : Form
     {
         if (e.Button == MouseButtons.Left && breakForms != null && breakHidden) { ShowBreak(); return; } // bring the break screen back
         if (e.Button != MouseButtons.Left || breakForms != null) return;
-        if (focusing) { if (stopR.Contains(e.Location)) StopFocus("집중 중지", false); return; }
+        if (focusing) { if (stopR.Contains(e.Location)) StopFocus(T("Focus stopped", "집중 중지"), false); return; }
         if (minusR.Contains(e.Location)) StepTier(-1);
         else if (plusR.Contains(e.Location)) StepTier(1);
         else if (goR.Contains(e.Location))
@@ -1429,7 +1457,7 @@ class PQForm : Form
             if (breakForms != null)
             {
                 using (var b = new SolidBrush(lav)) g.FillPath(b, card);
-                TextRenderer.DrawText(g, "휴식 중  " + Clock((breakEnd - DateTime.Now).TotalSeconds) + (breakHidden ? "  · 클릭: 휴식 화면" : ""), ageFont,
+                TextRenderer.DrawText(g, T("Break  ", "휴식 중  ") + Clock((breakEnd - DateTime.Now).TotalSeconds) + (breakHidden ? T("  · click: break screen", "  · 클릭: 휴식 화면") : ""), ageFont,
                     new Rectangle(r.X + doneW, r.Y, r.Width - doneW * 2, r.Height), lavDeep, lf);
                 return;
             }
@@ -1445,18 +1473,18 @@ class PQForm : Form
                 using (var pen = new Pen((barWarn && note) || away ? RedDeep : GreenDeep, 1.4f * s)) g.DrawPath(pen, card);
                 int sw = (int)(54 * s);
                 stopR = new Rectangle(r.Right - sw - (int)(6 * s), py, sw, ph);
-                Pill(g, stopR, Color.FromArgb(235, 232, 240), GrayDeep, "■ 그만", ageFont);
-                string txt = note ? barNote : away ? "⏸ 일시정지 · " + Clock(AwaySec - (DateTime.Now - awayStart).TotalSeconds) + " 안에 복귀" : "집중  " + Clock(left) + "  남음";
+                Pill(g, stopR, Color.FromArgb(235, 232, 240), GrayDeep, T("■ Stop", "■ 그만"), ageFont);
+                string txt = note ? barNote : away ? T("⏸ Paused · back within ", "⏸ 일시정지 · ") + Clock(AwaySec - (DateTime.Now - awayStart).TotalSeconds) + T("", " 안에 복귀") : T("Focus  ", "집중  ") + Clock(left) + T("  left", "  남음");
                 TextRenderer.DrawText(g, txt, ageFont, new Rectangle(r.X + doneW, r.Y, stopR.X - r.X - doneW - (int)(4 * s), r.Height),
                     (note && barWarn) || away ? RedDeep : GreenDeep, lf);
                 return;
             }
-            // idle: [-] 30분 [+]      [▶ 집중 시작]
+            // idle: [<] 30 min [>]      [▶ Start]
             using (var b = new SolidBrush(Color.White)) g.FillPath(b, card);
             using (var pen = new Pen(Color.FromArgb(215, 208, 222), 1f * s)) g.DrawPath(pen, card);
             int gw = (int)(58 * s);
             goR = new Rectangle(r.Right - gw - (int)(6 * s), py, gw, ph);
-            Pill(g, goR, GreenFill, GreenDeep, "▶ 시작", ageFont);
+            Pill(g, goR, GreenFill, GreenDeep, T("▶ Start", "▶ 시작"), ageFont);
             if (note)
             {
                 TextRenderer.DrawText(g, barNote, ageFont, new Rectangle(r.X + doneW, r.Y, goR.X - r.X - doneW - (int)(4 * s), r.Height),
@@ -1467,11 +1495,11 @@ class PQForm : Form
             minusR = new Rectangle(x, py, bs, bs);
             Pill(g, minusR, Color.FromArgb(240, 236, 244), selTier > 0 ? GrayDeep : Color.FromArgb(205, 200, 212), "<", ageFont);
             int lw = (int)(44 * s);
-            TextRenderer.DrawText(g, TierFocus[selTier] + "분", Font, new Rectangle(minusR.Right, r.Y, lw, r.Height), Ink,
+            TextRenderer.DrawText(g, TierFocus[selTier] + T(" min", "분"), Font, new Rectangle(minusR.Right, r.Y, lw, r.Height), Ink,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
             plusR = new Rectangle(minusR.Right + lw, py, bs, bs);
             // which session of this task + its break length
-            TextRenderer.DrawText(g, (selTier + 1) + "회차 · 휴식 " + TierBreak[selTier] + "분",
+            TextRenderer.DrawText(g, T("R" + (selTier + 1) + " · " + TierBreak[selTier] + "m rest", (selTier + 1) + "회차 · 휴식 " + TierBreak[selTier] + "분"),
                 ageFont, new Rectangle(plusR.Right + (int)(6 * s), r.Y, goR.X - plusR.Right - (int)(8 * s), r.Height), Muted, lf);
             Pill(g, plusR, Color.FromArgb(240, 236, 244), selTier < TierFocus.Length - 1 ? GrayDeep : Color.FromArgb(205, 200, 212), ">", ageFont);
         }
@@ -1521,7 +1549,7 @@ class PQForm : Form
         if (!quiet)
         {
             System.Media.SystemSounds.Asterisk.Play();
-            Note("휴식 끝! 다시 시작해볼까요", false);
+            Note(T("Break over! Ready to start again?", "휴식 끝! 다시 시작해볼까요"), false);
         }
         BackToWork();
     }
@@ -1546,7 +1574,7 @@ class PQForm : Form
         freezeFrom = nowX; pausedSec = 0; plannedMin = ExtendMin; extension = true;
         warnedItem = null;
         tick.Start();
-        Note("+" + ExtendMin + "분 연장 · 끝나면 다시 휴식", false);
+        Note(T("+" + ExtendMin + " min · break comes back after", "+" + ExtendMin + "분 연장 · 끝나면 다시 휴식"), false);
         bar.Invalidate(); list.Invalidate();
     }
 
@@ -1560,7 +1588,7 @@ class PQForm : Form
         breakHidden = true;
         foreach (var f in breakForms) f.Hide();
         if ((breakEnd - DateTime.Now).TotalSeconds <= SoonSec) ShowSoon();
-        Note("백그라운드로 휴식 중 · 끝나기 10초 전에 알려줄게요", false);
+        Note(T("Resting in the background · alert 10 s before the end", "백그라운드로 휴식 중 · 끝나기 10초 전에 알려줄게요"), false);
         tick.Start();
     }
 
@@ -1599,11 +1627,11 @@ class PQForm : Form
         using (var p = Round(new Rectangle(0, 0, f.Width - 1, f.Height - 1), (int)(11 * s)))
         using (var pen = new Pen(lav, 2.4f * s)) g.DrawPath(pen, p);
         var cf = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine;
-        TextRenderer.DrawText(g, "휴식이 곧 끝나요", midFont, new Rectangle(0, (int)(12 * s), f.Width, (int)(28 * s)), lavDeep, cf);
+        TextRenderer.DrawText(g, T("Break is almost over", "휴식이 곧 끝나요"), midFont, new Rectangle(0, (int)(12 * s), f.Width, (int)(28 * s)), lavDeep, cf);
         double left = Math.Max(0, (breakEnd - DateTime.Now).TotalSeconds);
         using (var big = new Font(bigFont.FontFamily, 26f))
             TextRenderer.DrawText(g, Clock(left), big, new Rectangle(0, (int)(40 * s), f.Width, (int)(50 * s)), Ink, cf);
-        TextRenderer.DrawText(g, "자리로 돌아올 준비 · 클릭하면 닫혀요", ageFont, new Rectangle(0, (int)(94 * s), f.Width, (int)(22 * s)), Muted, cf);
+        TextRenderer.DrawText(g, T("Get ready to come back · click to close", "자리로 돌아올 준비 · 클릭하면 닫혀요"), ageFont, new Rectangle(0, (int)(94 * s), f.Width, (int)(22 * s)), Muted, cf);
     }
 
     void PaintBreak(object o, PaintEventArgs e)
@@ -1617,10 +1645,10 @@ class PQForm : Form
         using (var b = new SolidBrush(Bg)) g.FillPath(b, p);
         var cf = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine;
         Color lavDeep = Color.FromArgb(125, 105, 170);
-        TextRenderer.DrawText(g, "휴식 시간", midFont, new Rectangle(c.X, c.Y + (int)(26 * s), c.Width, (int)(30 * s)), lavDeep, cf);
+        TextRenderer.DrawText(g, T("Break time", "휴식 시간"), midFont, new Rectangle(c.X, c.Y + (int)(26 * s), c.Width, (int)(30 * s)), lavDeep, cf);
         double left = (breakEnd - DateTime.Now).TotalSeconds;
         TextRenderer.DrawText(g, Clock(left), bigFont, new Rectangle(c.X, c.Y + (int)(62 * s), c.Width, (int)(80 * s)), Ink, cf);
-        TextRenderer.DrawText(g, "화면에서 눈을 떼고, 일어나서 물 한 잔 + 스트레칭", Font,
+        TextRenderer.DrawText(g, T("Look away from the screen, get up, drink water, stretch", "화면에서 눈을 떼고, 일어나서 물 한 잔 + 스트레칭"), Font,
             new Rectangle(c.X, c.Y + (int)(150 * s), c.Width, (int)(24 * s)), Muted, cf);
         // "5 more minutes" button
         // "5 more minutes" + "keep resting in the background" buttons
@@ -1634,9 +1662,9 @@ class PQForm : Form
         {
             extR = new Rectangle(c.X + c.Width / 2 - ebw - egap / 2, ey, ebw, ebh);
             bgR = new Rectangle(c.X + c.Width / 2 + egap / 2, ey, ebw, ebh);
-            Pill(g, extR, GreenFill, GreenDeep, "+" + ExtendMin + "분 더 집중", Font);
+            Pill(g, extR, GreenFill, GreenDeep, T("+" + ExtendMin + " min focus", "+" + ExtendMin + "분 더 집중"), Font);
         }
-        Pill(g, bgR, Color.FromArgb(235, 232, 240), GrayDeep, "백그라운드로 쉬기", Font);
+        Pill(g, bgR, Color.FromArgb(235, 232, 240), GrayDeep, T("Rest in background", "백그라운드로 쉬기"), Font);
         // progress
         var pr = new Rectangle(c.X + (int)(50 * s), c.Bottom - (int)(40 * s), c.Width - (int)(100 * s), (int)(8 * s));
         float done = (float)Math.Max(0, Math.Min(1, 1 - left / (breakMin * 60.0)));
@@ -1649,18 +1677,80 @@ class PQForm : Form
             using (var b = new SolidBrush(Color.FromArgb(180, 160, 220))) g.FillPath(b, p);
         }
         // small emergency exit at the bottom of the screen
-        string skip = "급한 일이면 여기를 더블클릭해서 건너뛰기";
+        string skip = T("Urgent? Double-click here to skip the break", "급한 일이면 여기를 더블클릭해서 건너뛰기");
         var font = ageFont;
         Size sz = TextRenderer.MeasureText(skip, font);
         skipR = new Rectangle((f.ClientSize.Width - sz.Width) / 2 - (int)(10 * s), f.ClientSize.Height - (int)(70 * s), sz.Width + (int)(20 * s), (int)(28 * s));
         TextRenderer.DrawText(g, skip, font, skipR, Color.FromArgb(120, 112, 140), cf);
     }
 
+    // ---------- language ----------
+
+    string langPath;
+
+    void LoadLang()
+    {
+        string v = null;
+        try { if (File.Exists(langPath)) v = File.ReadAllText(langPath).Trim(); } catch { }
+        Lang.Ko = v == "ko" || (v != "en" && System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "ko");
+    }
+
+    void SetLang(bool ko)
+    {
+        Lang.Ko = ko;
+        try { File.WriteAllText(langPath, ko ? "ko" : "en"); } catch { }
+        header.Text = HeaderText();
+        SetCue();
+        BuildMenus();
+        Invalidate(true); bar.Invalidate(); list.Invalidate();
+        if (stats != null && !stats.IsDisposed) stats.Invalidate();
+    }
+
+    static string HeaderText() { return "✿  " + T("To-do", "할 일") + "    Ctrl+Alt+Space"; }
+
+    void SetCue() { if (input.IsHandleCreated) SendMessage(input.Handle, 0x1501, (IntPtr)1, T("+ task for this window", "+ 이 창의 할 일")); }
+
+    void BuildMenus()
+    {
+        menu.Items.Clear(); hmenu.Items.Clear();
+        menu.Items.Add(T("Go to this window (click / Enter)", "이 창으로 이동 (클릭 / Enter)"), null, (o, e) => TrySwitch(list.SelectedItem as Item));
+        menu.Items.Add(T("Done (Shift+click / Del)", "완료 (Shift+클릭 / Del)"), null, (o, e) => RemoveSelected());
+        menu.Items.Add(T("+ Also link the previous window", "+ 직전 창도 이 할 일에 연결"), null, (o, e) => AddWindow(list.SelectedItem as Item, lastExternal));
+        menu.Items.Add(T("Re-link windows (previous + neighbor)", "창 연결 다시 하기 (직전 창 + 옆 창)"), null, (o, e) =>
+        {
+            var it = list.SelectedItem as Item;
+            if (it != null) { Attach(it, lastExternal); Changed(); }
+        });
+        var leave = new ToolStripMenuItem(T("Remove from group", "묶음에서 빼기"), null, (o, e) => LeaveGroup(list.SelectedItem as Item));
+        menu.Items.Add(leave);
+        menu.Opening += (o, e) => { var it = list.SelectedItem as Item; leave.Visible = it != null && it.GroupId != 0; };
+        menu.Items.Add(T("Move to top", "맨 위로"), null, (o, e) => MoveSelected(-list.SelectedIndex));
+        menu.Items.Add(T("Reset timer", "타이머 리셋"), null, (o, e) => ResetSelected());
+        menu.Items.Add(T("Restart focus rounds (from 15 min)", "집중 회차 처음으로 (15분부터)"), null, (o, e) =>
+        {
+            var it = list.SelectedItem as Item;
+            if (it != null) { SetTaskSessions(it, 0); if (it == barItem || SameGroup(it, barItem)) selTier = 0; Changed(); bar.Invalidate(); }
+        });
+        menu.Items.Add(new ToolStripSeparator());
+        foreach (var m in new[] { menu, hmenu })
+        {
+            m.Items.Add(T("Stats", "통계 보기"), null, (o, e) => OpenStats());
+            m.Items.Add(T("Open log sheet (CSV)", "기록 시트 열기 (CSV)"), null, (o, e) => OpenLogSheet());
+            m.Items.Add(OpacityMenu());
+            var lm = new ToolStripMenuItem(T("Language", "언어"));
+            var en = new ToolStripMenuItem("English", null, (o, e) => SetLang(false)) { Checked = !Lang.Ko };
+            var ko = new ToolStripMenuItem("한국어", null, (o, e) => SetLang(true)) { Checked = Lang.Ko };
+            lm.DropDownItems.Add(en); lm.DropDownItems.Add(ko);
+            m.Items.Add(lm);
+            m.Items.Add(T("Quit", "종료"), null, (o, e) => Close());
+        }
+    }
+
     // ---------- opacity ----------
 
     ToolStripMenuItem OpacityMenu()
     {
-        var m = new ToolStripMenuItem("투명도");
+        var m = new ToolStripMenuItem(T("Opacity", "투명도"));
         foreach (int p in new[] { 100, 90, 80, 70, 60, 50, 40 })
         {
             int pp = p;
@@ -1814,7 +1904,7 @@ class PQForm : Form
     static string FmtMin(double m)
     {
         int v = (int)Math.Round(m);
-        return v < 60 ? v + "분" : (v / 60) + "시간" + (v % 60 > 0 ? " " + (v % 60) + "분" : "");
+        return v < 60 ? v + T(" min", "분") : (v / 60) + T("h", "시간") + (v % 60 > 0 ? " " + (v % 60) + T("m", "분") : "");
     }
 
     class StatsForm : Form
@@ -1841,7 +1931,7 @@ class PQForm : Form
             KeyPreview = true;
             DoubleBuffered = true;
             BackColor = Bg;
-            Text = "집중 기록";
+            Text = T("Focus log", "집중 기록");
             StartPosition = FormStartPosition.Manual;
             Size = new Size((int)(760 * s), (int)(640 * s));
             var wa = Screen.PrimaryScreen.WorkingArea;
@@ -1876,7 +1966,7 @@ class PQForm : Form
                         if (r.Length < 9 || !DateTime.TryParse(r[0], out st)) continue;
                         double.TryParse(r[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out m);
                         int rd, pl; int.TryParse(r[5], out rd); int.TryParse(r[6], out pl);
-                        all.Add(new Rec { Start = st, Min = m, Task = r[3].Length > 0 ? r[3] : "(할 일 없음)", Group = r[4], Round = rd, Planned = pl, Kind = r[7], Outcome = r[8] });
+                        all.Add(new Rec { Start = st, Min = m, Task = r[3].Length > 0 ? r[3] : T("(no task)", "(할 일 없음)"), Group = r[4], Round = rd, Planned = pl, Kind = Code(r[7]), Outcome = Code(r[8]) });
                     }
             }
             catch { }
@@ -1920,23 +2010,23 @@ class PQForm : Form
             foreach (var r in rows)
             {
                 total += r.Min; days.Add(r.Start.Date);
-                if (r.Outcome == "완료") done++;
-                if (r.Kind == "연장") ext++;
-                if (r.Outcome == "이탈") left++;
+                if (r.Outcome == "done") done++;
+                if (r.Kind == "extension") ext++;
+                if (r.Outcome == "left") left++;
             }
 
             // header: title, range chips, close
-            string label = range == "today" ? "오늘" : range == "7" ? "최근 7일" : range == "30" ? "최근 30일" : "전체 기간";
-            TextRenderer.DrawText(g, "집중 기록", fTitle, new Rectangle(M, S(16), S(300), S(28)), Ink, L);
-            TextRenderer.DrawText(g, label + " · 세션 " + rows.Count + "개", fSmall, new Rectangle(M, S(42), S(300), S(18)), Muted, L);
+            string label = range == "today" ? T("Today", "오늘") : range == "7" ? T("Last 7 days", "최근 7일") : range == "30" ? T("Last 30 days", "최근 30일") : T("All time", "전체 기간");
+            TextRenderer.DrawText(g, T("Focus log", "집중 기록"), fTitle, new Rectangle(M, S(16), S(300), S(28)), Ink, L);
+            TextRenderer.DrawText(g, label + T(" · " + rows.Count + " sessions", " · 세션 " + rows.Count + "개"), fSmall, new Rectangle(M, S(42), S(300), S(18)), Muted, L);
             closeR = new Rectangle(W - M - S(28), S(20), S(28), S(28));
             using (var p = Round(closeR, closeR.Height / 2))
             using (var b = new SolidBrush(Color.FromArgb(240, 236, 244))) g.FillPath(b, p);
             TextRenderer.DrawText(g, "✕", fText, closeR, GrayDeep, C);
             int cx = closeR.X - S(14);
-            foreach (var kv in new[] { new[] { "all", "전체" }, new[] { "30", "30일" }, new[] { "7", "7일" }, new[] { "today", "오늘" } })
+            foreach (var kv in new[] { new[] { "all", T("All", "전체") }, new[] { "30", T("30d", "30일") }, new[] { "7", T("7d", "7일") }, new[] { "today", T("Today", "오늘") } })
             {
-                int cw = S(kv[1].Length > 2 ? 48 : 44);
+                int cw = Math.Max(S(44), TextRenderer.MeasureText(kv[1], fSmall).Width + S(18));
                 var cr = new Rectangle(cx - cw, S(22), cw, S(24));
                 cx -= cw + S(6);
                 bool on = range == kv[0];
@@ -1949,10 +2039,10 @@ class PQForm : Form
             // KPI tiles
             int ky = S(72), kh = S(78), gap = S(10), kw = (W - M * 2 - gap * 3) / 4;
             string[][] k = {
-                new[] { "총 집중", rows.Count > 0 ? FmtMin(total) : "–", days.Count > 1 ? "하루 평균 " + FmtMin(total / days.Count) : "" },
-                new[] { "세션", rows.Count > 0 ? rows.Count.ToString() : "–", ext > 0 ? "연장 " + ext + "번 포함" : "" },
-                new[] { "끝까지 완료", rows.Count > 0 ? (done * 100 / rows.Count) + "%" : "–", rows.Count > 0 ? done + " / " + rows.Count + " 세션" : "" },
-                new[] { "평균 세션", rows.Count > 0 ? FmtMin(total / rows.Count) : "–", left > 0 ? "1분 넘게 이탈 " + left + "번" : "" } };
+                new[] { T("Total focus", "총 집중"), rows.Count > 0 ? FmtMin(total) : "–", days.Count > 1 ? T("avg/day ", "하루 평균 ") + FmtMin(total / days.Count) : "" },
+                new[] { T("Sessions", "세션"), rows.Count > 0 ? rows.Count.ToString() : "–", ext > 0 ? T("incl. " + ext + " extensions", "연장 " + ext + "번 포함") : "" },
+                new[] { T("Completed", "끝까지 완료"), rows.Count > 0 ? (done * 100 / rows.Count) + "%" : "–", rows.Count > 0 ? done + " / " + rows.Count + T(" sessions", " 세션") : "" },
+                new[] { T("Avg session", "평균 세션"), rows.Count > 0 ? FmtMin(total / rows.Count) : "–", left > 0 ? T("left > 1 min: " + left, "1분 넘게 이탈 " + left + "번") : "" } };
             for (int i = 0; i < 4; i++)
             {
                 var r = new Rectangle(M + i * (kw + gap), ky, kw, kh);
@@ -1982,13 +2072,13 @@ class PQForm : Form
             string title;
             if (range == "today")
             {
-                title = "시간대별 집중 (오늘)";
-                for (int h = 0; h < 24; h++) { names.Add(h + "시"); ticks.Add(h % 4 == 0 ? h + "시" : ""); vals.Add(0); }
+                title = T("Focus by hour (today)", "시간대별 집중 (오늘)");
+                for (int h = 0; h < 24; h++) { names.Add(h + T(":00", "시")); ticks.Add(h % 4 == 0 ? h + T(":00", "시") : ""); vals.Add(0); }
                 foreach (var r in rows) vals[r.Start.Hour] += r.Min;
             }
             else
             {
-                title = "일별 집중 시간";
+                title = T("Focus per day", "일별 집중 시간");
                 int n = range == "all" ? 14 : int.Parse(range);
                 if (range == "all" && all.Count > 0)
                 {
@@ -2001,7 +2091,7 @@ class PQForm : Form
                 {
                     var d = DateTime.Today.AddDays(-i); int j = n - 1 - i;
                     idx[d] = names.Count;
-                    names.Add(d.Month + "/" + d.Day + " (" + "일월화수목금토"[(int)d.DayOfWeek] + ")");
+                    names.Add(d.Month + "/" + d.Day + " (" + (Lang.Ko ? "일월화수목금토"[(int)d.DayOfWeek].ToString() : d.DayOfWeek.ToString().Substring(0, 3)) + ")");
                     ticks.Add(j % every == 0 || i == 0 ? d.Month + "/" + d.Day : "");
                     vals.Add(0);
                 }
@@ -2041,16 +2131,16 @@ class PQForm : Form
                 if (ticks[i].Length > 0)
                     TextRenderer.DrawText(g, ticks[i], fSmall, new Rectangle((int)(x + bw / 2) - S(24), B0 + S(4), S(48), S(18)), Muted, C);
                 hover.Add(new KeyValuePair<Rectangle, string>(new Rectangle((int)(L0 + i * cw), T0, (int)Math.Ceiling(cw), B0 - T0),
-                    names[i] + " · " + (vals[i] > 0 ? FmtMin(vals[i]) : "기록 없음")));
+                    names[i] + " · " + (vals[i] > 0 ? FmtMin(vals[i]) : T("no focus", "기록 없음"))));
             }
         }
 
         void DrawTasks(Graphics g, Rectangle c, List<Rec> rows)
         {
-            TextRenderer.DrawText(g, "할 일별 집중", fText, new Rectangle(c.X + S(14), c.Y + S(8), c.Width - S(28), S(24)), Ink, L);
+            TextRenderer.DrawText(g, T("Focus by task", "할 일별 집중"), fText, new Rectangle(c.X + S(14), c.Y + S(8), c.Width - S(28), S(24)), Ink, L);
             if (rows.Count == 0)
             {
-                TextRenderer.DrawText(g, "아직 기록이 없어요\n▶ 시작으로 집중해 보세요", fSmall, c, Muted,
+                TextRenderer.DrawText(g, T("No sessions yet\nPress ▶ Start to focus", "아직 기록이 없어요\n▶ 시작으로 집중해 보세요"), fSmall, c, Muted,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
                 return;
             }
@@ -2070,7 +2160,7 @@ class PQForm : Form
                 {
                     double rest = 0; int rn = 0;
                     for (int j = 5; j < keys.Count; j++) { rest += by[keys[j]][0]; rn += (int)by[keys[j]][1]; }
-                    list.Add(new[] { "기타 " + (keys.Count - 5) + "개", "" }); vals.Add(rest); cnt.Add(rn);
+                    list.Add(new[] { T((keys.Count - 5) + " others", "기타 " + (keys.Count - 5) + "개"), "" }); vals.Add(rest); cnt.Add(rn);
                     break;
                 }
                 list.Add(meta[keys[i]]); vals.Add(by[keys[i]][0]); cnt.Add((int)by[keys[i]][1]);
@@ -2094,7 +2184,7 @@ class PQForm : Form
                 using (var p = Round(fill, track.Height / 2))
                 using (var b = new SolidBrush(Bar)) g.FillPath(b, p);
                 hover.Add(new KeyValuePair<Rectangle, string>(new Rectangle(x, y, w, rowH),
-                    name + " · " + FmtMin(vals[i]) + " · 세션 " + cnt[i] + "개"));
+                    name + " · " + FmtMin(vals[i]) + T(" · " + cnt[i] + " sessions", " · 세션 " + cnt[i] + "개")));
                 y += rowH;
             }
         }
@@ -2103,14 +2193,14 @@ class PQForm : Form
         {
             var sorted = new List<Rec>(rows);
             sorted.Sort((a, b) => b.Start.CompareTo(a.Start));
-            TextRenderer.DrawText(g, "최근 세션", fText, new Rectangle(c.X + S(14), c.Y + S(8), S(200), S(24)), Ink, L);
-            string link = "기록 시트 열기 ↗";
+            TextRenderer.DrawText(g, T("Recent sessions", "최근 세션"), fText, new Rectangle(c.X + S(14), c.Y + S(8), S(200), S(24)), Ink, L);
+            string link = T("Open log sheet ↗", "기록 시트 열기 ↗");
             int lw = TextRenderer.MeasureText(link, fSmall).Width + S(8);
             sheetR = new Rectangle(c.Right - S(14) - lw, c.Y + S(10), lw, S(20));
             TextRenderer.DrawText(g, link, fSmall, sheetR, GreenDeep, C);
             int x = c.X + S(14), w = c.Width - S(28);
             int[] cols = { 0, S(92), S(330), S(470), S(560) };
-            string[] heads = { "시작", "할 일", "묶음", "집중", "결과" };
+            string[] heads = { T("Start", "시작"), T("Task", "할 일"), T("Group", "묶음"), T("Focus", "집중"), T("Result", "결과") };
             int y = c.Y + S(38);
             for (int i = 0; i < heads.Length; i++)
                 TextRenderer.DrawText(g, heads[i], fSmall, new Rectangle(x + cols[i], y, S(120), S(20)), Muted, L);
@@ -2119,7 +2209,7 @@ class PQForm : Form
             int rowH = S(24), maxRows = Math.Max(0, (c.Bottom - S(8) - y) / rowH);
             if (sorted.Count == 0)
             {
-                TextRenderer.DrawText(g, "이 기간에는 기록이 없어요", fSmall, new Rectangle(x, y, w, S(40)), Muted, C);
+                TextRenderer.DrawText(g, T("No sessions in this period", "이 기간에는 기록이 없어요"), fSmall, new Rectangle(x, y, w, S(40)), Muted, C);
                 return;
             }
             for (int i = 0; i < Math.Min(maxRows, sorted.Count); i++)
@@ -2127,12 +2217,12 @@ class PQForm : Form
                 var r = sorted[i];
                 string[] v = {
                     r.Start.Month + "/" + r.Start.Day + " " + r.Start.ToString("HH:mm"), r.Task, r.Group,
-                    r.Min.ToString("0.0") + "분" + (r.Planned > 0 ? " / " + r.Planned : ""),
-                    r.Outcome + (r.Kind == "연장" ? " · 연장" : "") };
+                    r.Min.ToString("0.0") + T("", "분") + (r.Planned > 0 ? " / " + r.Planned : "") + T(" min", ""),
+                    OutcomeLabel(r.Outcome) + (r.Kind == "extension" ? T(" · ext.", " · 연장") : "") };
                 for (int j = 0; j < v.Length; j++)
                 {
                     int cw2 = (j + 1 < cols.Length ? cols[j + 1] : w) - cols[j] - S(8);
-                    Color col = j == 4 ? (r.Outcome == "완료" ? GreenDeep : r.Outcome == "이탈" ? RedDeep : Ink2) : j == 0 || j == 3 ? Ink2 : Ink;
+                    Color col = j == 4 ? (r.Outcome == "done" ? GreenDeep : r.Outcome == "left" ? RedDeep : Ink2) : j == 0 || j == 3 ? Ink2 : Ink;
                     TextRenderer.DrawText(g, v[j], j == 1 ? fText : fSmall, new Rectangle(x + cols[j] - S(3), y, cw2, rowH), col, L);
                 }
                 y += rowH;
