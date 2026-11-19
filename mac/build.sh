@@ -1,16 +1,16 @@
 #!/bin/bash
-# Build FocusQueue.app (macOS). No Xcode project needed, only the Swift toolchain (xcode-select --install).
+# Build FocusBack.app (macOS). No Xcode project needed, only the Swift toolchain (xcode-select --install).
 # The shared C core (../core/*.c) is compiled with clang and linked in statically.
-#   ./build.sh          build mac/build/FocusQueue.app
+#   ./build.sh          build mac/build/FocusBack.app
 #   ./build.sh --run    build, then restart the running widget (your task data is backed up first, never touched)
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP="build/FocusQueue.app"
-BIN="$APP/Contents/MacOS/FocusQueue"
-BUNDLE_ID="io.github.focusqueue"
+APP="build/FocusBack.app"
+BIN="$APP/Contents/MacOS/FocusBack"
+BUNDLE_ID="io.github.focusback"
 MIN_MACOS="12.0"
-DATA="$HOME/Library/Application Support/ADHD-PQ"
+DATA="$HOME/Library/Application Support/FocusBack"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -24,8 +24,8 @@ for a in arm64 x86_64; do
     objs+=("$obj")
   done
   swiftc -O -swift-version 5 -target "$a-apple-macos$MIN_MACOS" -I CoreModule \
-    -o "build/FocusQueue-$a" Sources/*.swift "${objs[@]}"
-  archs+=("build/FocusQueue-$a")
+    -o "build/FocusBack-$a" Sources/*.swift "${objs[@]}"
+  archs+=("build/FocusBack-$a")
   rm -f "${objs[@]}"
 done
 lipo -create -output "$BIN" "${archs[@]}"
@@ -36,9 +36,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>FocusQueue</string>
-  <key>CFBundleDisplayName</key><string>FocusQueue</string>
-  <key>CFBundleExecutable</key><string>FocusQueue</string>
+  <key>CFBundleName</key><string>FocusBack</string>
+  <key>CFBundleDisplayName</key><string>FocusBack</string>
+  <key>CFBundleExecutable</key><string>FocusBack</string>
   <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${APP_VERSION:-0.0.0}</string>
@@ -59,6 +59,6 @@ if [[ "${1:-}" == "--run" ]]; then
   if [[ -s "$DATA/items.tsv" ]]; then cp "$DATA/items.tsv" "$DATA/items.bak.tsv"; fi
   # ask the running widget to quit cleanly (it logs a running session and saves)
   osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
-  for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -qx FocusQueue || break; sleep 0.3; done
+  for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -qx FocusBack || break; sleep 0.3; done
   open "$APP"
 fi
