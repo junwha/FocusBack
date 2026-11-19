@@ -60,6 +60,10 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+      - name: Core unit tests
+        run: |
+          cc -std=c11 -Wall -Wextra -o test_core core/tests/test_core.c core/pq_core.c core/pq_strings.c -lm
+          ./test_core "$(mktemp -d)"
       - name: Build FocusQueue.app
         run: mac/build.sh
       - name: Package
