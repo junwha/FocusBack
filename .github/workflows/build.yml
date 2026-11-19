@@ -63,7 +63,7 @@ jobs:
           gh release upload core $env:CORE_ASSET --clobber
 
   macos:
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - name: Core unit tests
