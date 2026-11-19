@@ -44,5 +44,14 @@ Name: "{userstartup}\FocusQueue"; Filename: "{app}\PQ.exe"; Tasks: startup
 [Run]
 Filename: "{app}\PQ.exe"; Description: "Start FocusQueue now"; Flags: nowait postinstall skipifsilent
 
-[UninstallRun]
-Filename: "{cmd}"; Parameters: "/c taskkill /im PQ.exe /f"; Flags: runhidden; RunOnceId: "StopPQ"
+[Code]
+// Before uninstalling, close only the PQ.exe that runs from this install folder (not a copy elsewhere).
+function InitializeUninstall(): Boolean;
+var Code: Integer;
+begin
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -Command "Get-Process PQ -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq ''' +
+    ExpandConstant('{app}') + '\PQ.exe'' } | ForEach-Object { $_.CloseMainWindow() | Out-Null; Start-Sleep -Milliseconds 800; if (-not $_.HasExited) { $_.Kill() } }"',
+    '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Result := True;
+end;
