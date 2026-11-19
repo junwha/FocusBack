@@ -1,13 +1,13 @@
 name: build
 
 # - every push: builds the core DLL + the Windows app, and the macOS app
-# - push to main: publishes the core DLL to the rolling "core" release so `build.bat` can download it
-#   (asset name = pq_core-<git tree hash of core/>-win-x64.dll, so a checkout always gets its own core)
+# - every push to a branch: publishes the core DLL to the rolling "core" release so `build.bat` can
+#   download it (asset name = pq_core-<git tree hash of core/>-win-x64.dll, so a checkout always gets its own core)
 # - tag v*: creates a GitHub release with the ready-to-run Windows and macOS zips
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -23,6 +23,12 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+      - name: Core unit tests
+        shell: cmd
+        run: |
+          cl /nologo /utf-8 /W3 core\tests\test_core.c core\pq_core.c core\pq_strings.c /Fe:test_core.exe
+          mkdir "%RUNNER_TEMP%\pq_test"
+          test_core.exe "%RUNNER_TEMP%\pq_test"
       - name: Build pq_core.dll
         shell: cmd
         run: cl /nologo /O2 /W3 /utf-8 /LD core\pq_core.c core\pq_strings.c /Fe:windows\pq_core.dll
@@ -45,7 +51,7 @@ jobs:
             FocusQueue-windows-x64.zip
             pq_core-*-win-x64.dll
       - name: Publish core DLL for build.bat
-        if: github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
