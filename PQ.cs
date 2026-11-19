@@ -392,7 +392,7 @@ class PQForm : Form
         if (list == null) return;
         if (focusing)
         {
-            if (!focusWins.Contains(h)) { if (!away) StartAway(prev); } // left the task: 1-minute grace
+            if (!FocusOwns(h)) { if (!away) StartAway(prev); } // left the task: 1-minute grace
             else if (away) EndAway(true);                                // came back in time: resume
         }
         bool changed = false;
@@ -911,11 +911,30 @@ class PQForm : Form
 
     // ---------- focus timer ----------
 
-    bool InFocus(Item it)
+    // items that make up the task being focused on, computed live so items/groups added after Start count too:
+    // the focus item, any item linked to a window you started in, and every member of their groups
+    HashSet<Item> FocusTask()
     {
-        if (!focusing || it == null) return false;
-        if (it == focusItem || SameGroup(it, focusItem)) return true;
-        foreach (var w in it.Wins) if (focusWins.Contains(w.H)) return true;
+        var set = new HashSet<Item>();
+        if (!focusing) return set;
+        var groups = new HashSet<int>();
+        foreach (Item it in list.Items)
+        {
+            bool root = it == focusItem;
+            foreach (var w in it.Wins) if (focusWins.Contains(w.H)) { root = true; break; }
+            if (root) { set.Add(it); if (it.GroupId != 0) groups.Add(it.GroupId); }
+        }
+        foreach (Item it in list.Items) if (it.GroupId != 0 && groups.Contains(it.GroupId)) set.Add(it);
+        return set;
+    }
+
+    bool InFocus(Item it) { return it != null && FocusTask().Contains(it); }
+
+    // is window h part of the task being focused on?
+    bool FocusOwns(IntPtr h)
+    {
+        if (focusWins.Contains(h)) return true;
+        foreach (var it in FocusTask()) if (it.Has(h)) return true;
         return false;
     }
 
@@ -1162,7 +1181,7 @@ class PQForm : Form
     {
         away = true;
         awayStart = DateTime.Now;
-        awayHome = from != IntPtr.Zero && focusWins.Contains(from) ? from : IntPtr.Zero;
+        awayHome = from != IntPtr.Zero && FocusOwns(from) ? from : IntPtr.Zero;
         if (awayHome == IntPtr.Zero) foreach (var w in focusWins) if (IsWindow(w)) { awayHome = w; break; }
         if (awayForm == null)
         {
