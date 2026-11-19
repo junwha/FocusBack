@@ -2,23 +2,44 @@
 
 [English](README.md) | **한국어**
 
-항상 위에 떠 있는 작은 **할 일 큐 + 집중 타이머** 위젯입니다.
+항상 위에 떠 있는 작은 **할 일 큐 + 집중 타이머** 위젯입니다. Windows와 macOS에서 동작합니다.
 화면 우측 상단에 떠서 지금 하고 있는 일과 가장 오래 기다린 일을 보여주고, 집중/휴식 사이클을 이끌어 줍니다.
 
 ![데모: 지금 있는 창에 따라 할 일이 바뀌고, 집중 중 1분 유예 카드, 휴식 화면, 통계 창](docs/demo.gif)
 
 <sub>Windows에서 예시 데이터로 찍은 데모입니다. 집중은 10초 테스트 모드(Ctrl+클릭 ▶ 시작)입니다.</sub>
 
-**Windows**(`PQ.cs`, 단일 파일 C# WinForms 앱)와 **macOS**(`mac/`, Swift/AppKit 네이티브 앱)에서 동작합니다.
+## 설치
 
-화면은 **영어**와 **한국어**를 지원합니다. 기본값은 시스템 표시 언어를 따르고, 우클릭 메뉴 → **언어**에서 언제든 바꿀 수 있습니다.
+**[Releases](https://github.com/junwha/ADHDTimer/releases/latest)** 에서 최신 버전을 받습니다.
+
+**Windows 10/11**
+1. `FocusQueue-windows-x64.zip`을 받아 아무 곳에나 압축을 풉니다 (`PQ.exe`와 `pq_core.dll`은 같은 폴더에 둡니다).
+2. `PQ.exe`를 실행합니다. SmartScreen 경고가 뜨면 **추가 정보 → 실행**을 누릅니다.
+3. 선택: Windows를 켤 때 같이 실행하려면 `PQ.exe` 바로가기를 `shell:startup` 폴더에 넣습니다 (Win+R → `shell:startup`).
+
+**macOS 12 이상**
+1. `FocusQueue-macos.zip`을 받아 압축을 풀고 `FocusQueue.app`을 `응용 프로그램` 폴더로 옮깁니다.
+2. 처음 한 번은 **우클릭 → 열기**로 엽니다 (공증되지 않은 앱이라서).
+3. **시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용**에서 FocusQueue를 허용하면 할 일이 창 단위로 연결됩니다 (허용하지 않으면 앱 단위).
+
+데이터는 내 컴퓨터 밖으로 나가지 않습니다 ([데이터](#데이터) 참고).
+
+## 사용법
+
+1. **할 일 추가** – 작업 중인 창에서 위젯 아래의 점선 카드(`+ 이 창의 할 일`)에 적고 Enter. 그 할 일이 지금 창과 연결됩니다. 어디서든 `Ctrl+Alt+Space` (macOS: `Ctrl+Option+Space`)로 입력 카드로 갈 수 있습니다.
+2. **작업** – 할 일에 연결된 창에 있으면 **● 작업 중**으로 표시됩니다. 손대지 않은 할 일은 점점 빨개집니다.
+3. **전환** – 할 일을 클릭하면 그 창들로 돌아갑니다. **Shift+클릭**(또는 Del)은 완료. 끌어서 순서를 바꾸고, 다른 할 일 **위에** 놓으면 묶음이 됩니다.
+4. **집중** – **▶ 시작**을 누릅니다. 할 일마다 회차가 15 → 30 → 60분으로 올라갑니다 (`<` `>`로 변경). 할 일의 창 안에 머무르세요. 다른 곳으로 가면 **1분** 안에 돌아오면 됩니다.
+5. **휴식** – 시간이 끝나면 화면이 어두워지고 3~15분 휴식이 시작됩니다. 쉬거나, **+5분 더 집중** / **백그라운드로 쉬기**(끝나기 10초 전에 알림)를 고릅니다.
+6. **돌아보기** – 우클릭 → **통계 보기**에서 날짜별·할 일별 집중 시간을 봅니다. 우클릭 메뉴에 **언어**(English / 한국어), **투명도**, **종료**도 있습니다.
 
 ## 기능
 
 ### 할 일 큐
-- 입력 카드에 할 일을 적으면 **지금 보고 있는 창**과 연결됩니다. 그 창에 있는 동안 할 일이 *작업 중*으로 표시됩니다.
+- 할 일은 **지금 보고 있는 창**(과 옆에 붙여 둔 창)에 연결됩니다. 그 창에 있는 동안 *작업 중*으로 표시됩니다.
 - 한동안 손대지 않은 할 일은 점점 빨갛게 변합니다.
-- 메모, 드래그로 순서 바꾸기, 투명도 조절.
+- 드래그로 순서 바꾸기, 투명도 조절.
 - 할 일을 다른 할 일 위에 끌어다 놓으면 **묶음**(둥근 섹션)이 됩니다. 묶음 안의 창들 사이를 오가는 것은 같은 작업으로 칩니다.
 - 지금 작업 중인 할 일을 한 번 더 클릭하면 이름을 바꿀 수 있고, 섹션 헤더를 클릭하면 묶음 이름을 바꿀 수 있습니다.
 
@@ -34,31 +55,40 @@
 ### 기록과 통계
 - 모든 집중 세션이 `focus_log.csv`에 기록됩니다(아래 참고).
 - 우클릭 → **통계 보기**: 오늘 / 7일 / 30일 / 전체 기간의 총 집중 시간, 세션 수, 완료율, 일별·시간대별 집중, 할 일별 집중, 최근 세션.
-- `PQ.exe --stats`(Windows) 또는 `FocusQueue.app/Contents/MacOS/FocusQueue --stats`(macOS)로 통계 창을 바로 열 수 있습니다.
+- `PQ.exe --stats` (Windows) 또는 `FocusQueue.app/Contents/MacOS/FocusQueue --stats` (macOS)로 통계 창을 바로 열 수 있습니다.
 
-## 빌드 (Windows)
+## 구조
 
-.NET Framework 4에 들어 있는 `csc.exe`만 있으면 됩니다. 따로 설치할 것은 없습니다.
+```
+core/      pq_core.c/.h    공통 C 코어: 할 일 큐, 묶음, 파일, 집중/휴식 규칙, 기록, 통계, 모든 화면 문구
+windows/   PQ.cs, Core.cs  Windows 프론트엔드 (C# WinForms): 창 추적, 그리기, 입력
+mac/       Sources/*.swift macOS 프론트엔드 (Swift/AppKit): 창 추적, 그리기, 입력
+```
 
+두 앱 모두 같은 코어 위에 얇은 프론트엔드만 올린 구조라서, 규칙이나 문구는 한 곳만 고치면 됩니다. 프론트엔드는 운영체제마다 다른 부분(앞에 있는 창 추적, 그리기, 입력)만 맡습니다.
+
+## 소스에서 빌드
+
+**Windows** – 설치할 것 없음:
 ```bat
-build.bat
+windows\build.bat
 ```
+C# 컴파일러는 Windows에 들어 있습니다. 스크립트가 지금 체크아웃에 맞는 `pq_core.dll`을 [core 릴리스](https://github.com/junwha/ADHDTimer/releases/tag/core)에서 받아서(CI가 `main`의 커밋마다 올림) `windows\PQ.exe`를 만듭니다. 코어를 직접 빌드했다면(`cl /utf-8 /LD core\pq_core.c core\pq_strings.c`) DLL을 `windows\`에 두고 `windows\build.bat --local`을 실행합니다.
 
-`PQ.exe`가 만들어집니다. 단축키는 `Ctrl+Alt+Space`입니다. 실행 중에 한 번 더 실행하면 위젯을 화면으로 다시 불러옵니다.
-
-## 빌드 (macOS)
-
-macOS 12 이상과 Swift 툴체인(Xcode 또는 `xcode-select --install`)이 필요합니다. Xcode 프로젝트는 없습니다.
-
+**macOS** – Swift 도구가 필요합니다 (Xcode, 또는 `xcode-select --install`):
 ```bash
-mac/build.sh
+mac/build.sh          # mac/build/FocusQueue.app 빌드 (코어를 함께 컴파일해서 링크)
+mac/build.sh --run    # 실행 중인 위젯도 다시 시작 (할 일 목록은 먼저 백업)
 ```
 
-`mac/build/FocusQueue.app`이 만들어집니다(유니버설, Dock 아이콘 없음). `/Applications`로 옮겨서 실행하세요. `mac/build.sh --run`은 빌드한 뒤 실행 중인 위젯을 다시 시작합니다. 할 일 큐는 먼저 백업되고 절대 지워지지 않습니다.
+**코어 테스트** – 순수 C라 어떤 컴파일러든 됩니다:
+```bash
+cc -std=c11 -Wall -Wextra -o test_core core/tests/test_core.c core/pq_core.c core/pq_strings.c -lm
+./test_core "$(mktemp -d)"
+```
+Windows에서는 `cl /utf-8 core\tests\test_core.c core\pq_core.c core\pq_strings.c`로 빌드하고 빈 폴더를 주고 `test_core.exe`를 실행합니다. CI가 두 플랫폼에서 모두 돌립니다.
 
-- 단축키는 `Ctrl+Option+Space`입니다. 실행 중에 앱을 한 번 더 열면 위젯을 화면으로 다시 불러옵니다.
-- 할 일을 창 단위로 연결하려면 **시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용**에서 FocusQueue를 허용하세요. 허용하지 않으면 앱 단위로 연결되고, 위젯에 클릭할 수 있는 안내가 표시됩니다. 빌드는 ad-hoc 서명이라 다시 빌드한 뒤에는 한 번 더 허용해야 할 수 있습니다.
-- Windows와 다른 점: **▶ 시작**을 `Option+클릭`하면 10초짜리 테스트 집중(Windows는 `Ctrl+클릭`), `Ctrl+클릭`은 우클릭 메뉴, `Cmd+클릭`은 선택만, `Delete` 키는 선택한 할 일 완료입니다.
+macOS에서는 **▶ 시작**을 `Option+클릭`하면 10초 테스트 집중(Windows는 `Ctrl+클릭`), `Ctrl+클릭`은 우클릭 메뉴, `Cmd+클릭`은 선택만, `Delete`는 선택한 할 일 완료입니다. 빌드는 임시 서명(ad-hoc)이라 다시 빌드한 뒤에는 손쉬운 사용 권한을 다시 허용해야 할 수 있습니다.
 
 ## 데이터
 
@@ -84,6 +114,4 @@ Windows에서는 `PQ.exe --data <폴더>`로 실행하면 다른 폴더에 데�
 | `kind` | `focus`(기본) 또는 `extension`(+5분 연장) |
 | `outcome` | `done`(완료), `stopped`(중지), `left`(1분 안에 안 돌아옴), `quit`(위젯 종료) |
 
-30초보다 짧은 집중은 기록하지 않습니다.
-
-macOS에서도 파일 형식은 같습니다. `items.tsv`의 창 열에는 `CGWindowID`(`0` = 앱 전체)가, 프로세스 열에는 앱의 번들 ID가 들어갑니다. 실행할 때마다 무언가를 쓰기 전에 `items.tsv`를 `items.bak.tsv`로 복사해 둡니다.
+30초보다 짧은 집중은 기록하지 않습니다. 실행할 때마다 `items.tsv`를 먼저 `items.bak.tsv`로 복사해 둡니다. macOS의 `items.tsv`에서 창 열에는 `CGWindowID`가(창 단위 추적을 못 할 때, 즉 손쉬운 사용 권한이 없을 때는 앱마다 정해진 음수 ID가), 프로세스 열에는 앱의 번들 ID가 들어갑니다.

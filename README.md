@@ -2,23 +2,44 @@
 
 **English** | [한국어](README_ko.md)
 
-A tiny always-on-top **task queue + focus timer** widget.
+A tiny always-on-top **task queue + focus timer** widget for Windows and macOS.
 It sits in the top-right corner of the screen, shows what you're working on and what has been waiting the longest, and walks you through focus/break cycles.
 
 ![Demo: tasks follow the window you're in, a focus session with the 1-minute grace card, the break screen, and the stats window](docs/demo.gif)
 
 <sub>Demo with sample data on Windows. The focus run is the 10-second test mode (Ctrl+click ▶ Start).</sub>
 
-Runs on **Windows** (`PQ.cs`, a single-file C# WinForms app) and **macOS** (`mac/`, a native Swift/AppKit app).
+## Install
 
-The UI is available in **English** and **Korean**. It follows the system display language by default; switch any time from the right-click menu → **Language**.
+Download the latest release from **[Releases](https://github.com/junwha/ADHDTimer/releases/latest)**.
+
+**Windows 10/11**
+1. Download `FocusQueue-windows-x64.zip` and unzip it anywhere (keep `PQ.exe` and `pq_core.dll` together).
+2. Run `PQ.exe`. If SmartScreen warns about an unknown app: **More info → Run anyway**.
+3. Optional: to start it with Windows, put a shortcut to `PQ.exe` in `shell:startup` (Win+R → `shell:startup`).
+
+**macOS 12+**
+1. Download `FocusQueue-macos.zip`, unzip it, and move `FocusQueue.app` to `Applications`.
+2. The first time, **right-click → Open** (the app isn't notarized).
+3. Allow FocusQueue in **System Settings → Privacy & Security → Accessibility** so tasks can follow individual windows (without it, they follow whole apps).
+
+Your data never leaves your computer (see [Data](#data)).
+
+## How to use
+
+1. **Add a task** – in the window you're working in, type into the dashed card at the bottom of the widget (`+ task for this window`) and press Enter. The task is now linked to that window. `Ctrl+Alt+Space` (macOS: `Ctrl+Option+Space`) jumps to the card from anywhere.
+2. **Work** – whenever you're in a task's window, it shows **● working**. Tasks you haven't touched slowly turn red.
+3. **Switch** – click a task to bring its windows back. **Shift+click** (or Del) marks it done. Drag to reorder; drop a task **onto** another one to group them.
+4. **Focus** – press **▶ Start**. Each task goes through rounds: 15 → 30 → 60 minutes (`<` `>` to change). Stay in the task's windows; if you leave, you get **1 minute** to come back.
+5. **Break** – when the time is up, the screen goes dark for a 3–15 minute break. Take it, or choose **+5 min focus** / **Rest in background** (a reminder pops up 10 seconds before the end).
+6. **Look back** – right-click → **Stats** for your focus time per day and per task. Right-click also has **Language** (English / 한국어), **Opacity** and **Quit**.
 
 ## Features
 
 ### Task queue
-- Type a task in the input card and it gets linked to the **window you're in**. While you're in that window the task shows as *working*.
+- Tasks are linked to the **window you're in** (and windows snapped beside it); while you're there, the task shows as *working*.
 - Tasks you haven't touched in a while slowly turn red.
-- Notes, drag to reorder, adjustable opacity.
+- Drag to reorder, adjustable opacity.
 - Drop a task onto another task to make a **group** (a rounded section). Moving between the windows of a group counts as the same task.
 - Click the current task again to rename it; click a section header to rename the group.
 
@@ -36,29 +57,38 @@ The UI is available in **English** and **Korean**. It follows the system display
 - Right-click → **Stats**: total focus, sessions, completion rate, focus per day / per hour, focus by task, and recent sessions, for today / 7 days / 30 days / all time.
 - `PQ.exe --stats` (Windows) or `FocusQueue.app/Contents/MacOS/FocusQueue --stats` (macOS) opens the stats window directly.
 
-## Build (Windows)
+## How it's built
 
-Only needs `csc.exe`, which ships with .NET Framework 4. Nothing to install.
+```
+core/      pq_core.c/.h   shared C core: queue, groups, files, focus/break rules, log, stats, all UI strings
+windows/   PQ.cs, Core.cs Windows frontend (C# WinForms): window tracking, drawing, input
+mac/       Sources/*.swift macOS frontend (Swift/AppKit): window tracking, drawing, input
+```
 
+Both apps are thin frontends over the same core, so a rule or a string changes in one place. The frontends only do what is platform-specific: follow the window in front, draw, and handle input.
+
+## Build from source
+
+**Windows** – nothing to install:
 ```bat
-build.bat
+windows\build.bat
 ```
+The C# compiler ships with Windows. The script downloads the prebuilt `pq_core.dll` matching your checkout from the [core release](https://github.com/junwha/ADHDTimer/releases/tag/core) (CI publishes it for every commit on `main`) and produces `windows\PQ.exe`. If you build the core yourself (`cl /utf-8 /LD core\pq_core.c core\pq_strings.c`), put the DLL in `windows\` and run `windows\build.bat --local`.
 
-This produces `PQ.exe`. Hotkey: `Ctrl+Alt+Space`. Launching it again while it's running brings the widget back on screen.
-
-## Build (macOS)
-
-Needs macOS 12 or later and the Swift toolchain (Xcode, or `xcode-select --install`). There is no Xcode project.
-
+**macOS** – needs the Swift toolchain (Xcode, or `xcode-select --install`):
 ```bash
-mac/build.sh
+mac/build.sh          # builds mac/build/FocusQueue.app (core compiled and linked in)
+mac/build.sh --run    # also restarts a running widget (your queue is backed up first)
 ```
 
-This produces `mac/build/FocusQueue.app` (universal, no Dock icon). Move it to `/Applications` and open it. `mac/build.sh --run` builds and restarts a running widget; your task queue is backed up first and never deleted.
+**Core tests** – plain C, any compiler:
+```bash
+cc -std=c11 -Wall -Wextra -o test_core core/tests/test_core.c core/pq_core.c core/pq_strings.c -lm
+./test_core "$(mktemp -d)"
+```
+On Windows: `cl /utf-8 core\tests\test_core.c core\pq_core.c core\pq_strings.c` and run `test_core.exe` with an empty folder. CI runs them on both platforms.
 
-- Hotkey: `Ctrl+Option+Space`. Opening the app again while it's running brings the widget back on screen.
-- To link tasks to individual windows, allow FocusQueue in **System Settings → Privacy & Security → Accessibility**. Without it, tasks are linked per app, and the widget shows a notice you can click. The build is ad-hoc signed, so you may need to allow it again after rebuilding.
-- Differences from Windows: `Option+click` on **▶ Start** runs a 10-second test session (`Ctrl+click` on Windows), `Ctrl+click` opens the right-click menu, `Cmd+click` only selects, and `Delete` marks the selected task done.
+On macOS, `Option+click` on **▶ Start** runs a 10-second test session (`Ctrl+click` on Windows), `Ctrl+click` opens the right-click menu, `Cmd+click` only selects, and `Delete` marks the selected task done. The build is ad-hoc signed, so you may need to allow Accessibility again after rebuilding.
 
 ## Data
 
@@ -84,6 +114,4 @@ On Windows, `PQ.exe --data <folder>` runs a separate instance that keeps its dat
 | `kind` | `focus` or `extension` (+5 min) |
 | `outcome` | `done`, `stopped`, `left` (didn't come back within 1 min), `quit` (widget closed) |
 
-Segments shorter than 30 seconds are not logged.
-
-On macOS the files have the same format. In `items.tsv` the window column holds a `CGWindowID` (`0` = the whole app) and the process column holds the app's bundle identifier. Each launch copies `items.tsv` to `items.bak.tsv` before anything is written.
+Segments shorter than 30 seconds are not logged. Each launch copies `items.tsv` to `items.bak.tsv` before anything is written. On macOS the window column of `items.tsv` holds a `CGWindowID`, or a negative per-app id when windows are tracked per app (no Accessibility permission), and the process column holds the app's bundle identifier.

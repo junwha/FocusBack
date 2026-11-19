@@ -2,6 +2,7 @@
 // Without the Accessibility permission everything works per app instead of per window.
 import AppKit
 import ApplicationServices
+import PQCore
 
 @_silgen_name("_AXUIElementGetWindow")
 func _AXUIElementGetWindow(_ element: AXUIElement, _ wid: UnsafeMutablePointer<CGWindowID>) -> AXError
@@ -177,45 +178,58 @@ final class Tracker {
         NSWorkspace.shared.runningApplications.filter { procOf($0) == proc && !$0.isTerminated }
     }
 
-    /// re-find windows after a restart: same id if still alive, else exact title, else any window of the app.
-    /// never map two links onto the same window. Without the permission links stay app-level.
-    func resolve(_ it: Item) {
-        guard trusted else { return }
-        let alive = Dictionary(Tracker.cgWindows(onScreen: false).map { ($0.wid, $0.pid) }, uniquingKeysWith: { a, _ in a })
-        var used = Set<UInt32>()
-        var pending: [Win] = []
-        for w in it.wins {
-            if w.wid != 0, !used.contains(w.wid), let pid = alive[w.wid],
-               let app = NSRunningApplication(processIdentifier: pid), w.proc.isEmpty || Tracker.procOf(app) == w.proc {
-                used.insert(w.wid)
-            } else if w.wid != 0 { pending.append(w) }
+    /// re-find an item's windows after a restart (or a permission change) and write the live ids back
+    /// to the core: same window if still alive, else exact title, else any window of the app; never two
+    /// links on one window. Without the permission every link becomes per-app.
+    func resolve(_ id: Int32) {
+        let wins = core.wins(id)
+        guard trusted else {
+            for (k, w) in wins.enumerated() where !w.proc.isEmpty && w.key != Core.appKey(w.proc) {
+                pq_set_win_id(core.c, id, Int32(k), Core.appKey(w.proc))
+            }
+            return
         }
-        for w in pending {
-            w.wid = 0
+        let alive = Dictionary(Tracker.cgWindows(onScreen: false).map { (pq_win($0.wid), $0.pid) }, uniquingKeysWith: { a, _ in a })
+        var used = Set<pq_win>()
+        var pending: [Int] = []
+        for (k, w) in wins.enumerated() {
+            if w.key > 0, !used.contains(w.key), let pid = alive[w.key],
+               let app = NSRunningApplication(processIdentifier: pid), w.proc.isEmpty || Tracker.procOf(app) == w.proc {
+                used.insert(w.key)
+            } else { pending.append(k) }
+        }
+        for k in pending {
+            let w = wins[k]
             if w.proc.isEmpty { continue }
-            var byTitle: UInt32 = 0, byProc: UInt32 = 0
+            var byTitle: pq_win = 0, byProc: pq_win = 0
             outer: for app in Tracker.apps(w.proc) {
-                for (ax, id) in Tracker.axWindows(app.processIdentifier) where id != 0 && !used.contains(id) {
+                for (ax, wid) in Tracker.axWindows(app.processIdentifier) where wid != 0 && !used.contains(pq_win(wid)) {
                     let t: String = Tracker.attr(ax, kAXTitleAttribute) ?? ""
-                    if !t.isEmpty && t == w.title { byTitle = id; break outer }
-                    if byProc == 0 { byProc = id }
+                    if !t.isEmpty && t == w.title { byTitle = pq_win(wid); break outer }
+                    if byProc == 0 { byProc = pq_win(wid) }
                 }
             }
-            w.wid = byTitle != 0 ? byTitle : byProc // 0 = app-level until it's linked again
-            if w.wid != 0 { used.insert(w.wid) }
+            let live = byTitle != 0 ? byTitle : byProc != 0 ? byProc : Core.appKey(w.proc) // per-app until it's open again
+            if live > 0 { used.insert(live) }
+            if live != w.key { pq_set_win_id(core.c, id, Int32(k), live) }
         }
     }
 
-    func alive(_ w: Win) -> Bool {
-        if Tracker.apps(w.proc).isEmpty { return false }
-        if w.wid == 0 || !trusted { return true }
-        return Tracker.cgWindows(onScreen: false).contains { $0.wid == w.wid }
+    /// is the linked window (or app) still there?
+    func alive(_ key: pq_win, _ proc: String) -> Bool {
+        if Tracker.apps(proc).isEmpty { return false }
+        if key <= 0 || !trusted { return true }
+        return Tracker.cgWindows(onScreen: false).contains { pq_win($0.wid) == key }
     }
 
     /// bring the window forward (and un-minimize it); activate = also give it focus
-    func raise(_ w: Win, activate: Bool) {
-        guard let app = Tracker.apps(w.proc).first else { return }
-        if trusted && w.wid != 0, let ax = Tracker.axWindows(app.processIdentifier).first(where: { $0.1 == w.wid })?.0 {
+    func raise(_ key: pq_win, _ proc: String, activate: Bool) {
+        var app = Tracker.apps(proc).first
+        if app == nil && key > 0, let pid = Tracker.cgWindows(onScreen: false).first(where: { pq_win($0.wid) == key })?.pid {
+            app = NSRunningApplication(processIdentifier: pid)
+        }
+        guard let app = app else { return }
+        if trusted && key > 0, let ax = Tracker.axWindows(app.processIdentifier).first(where: { pq_win($0.1) == key })?.0 {
             AXUIElementSetAttributeValue(ax, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
             if activate { AXUIElementSetAttributeValue(ax, kAXMainAttribute as CFString, kCFBooleanTrue) }
             AXUIElementPerformAction(ax, kAXRaiseAction as CFString)

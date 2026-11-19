@@ -1,37 +1,35 @@
 // Test hooks, only active when the app is started with FOCUSQUEUE_DEBUG=1.
 // Send a command from a shell:  FocusQueue.app/Contents/MacOS/FocusQueue --debug "<command>"
 import AppKit
+import PQCore
 
 enum Debug {
     static func run(_ cmd: String, _ w: Widget) {
         let parts = cmd.split(separator: " ", maxSplits: 1).map(String.init)
         let arg = parts.count > 1 ? parts[1] : ""
+        let c = core.c
         switch parts.first ?? "" {
-        case "focus10": w.startFocus(); if w.focusing { w.startTestRun() }   // same as Option+click on ▶ Start
-        case "stop": w.stopFocus(T("Focus stopped", "집중 중지"), false)
-        case "break": // what happens when a session ends, without waiting for one
-            if let h = w.lastExternal { w.doneWins = [h]; w.doneItem = w.items.first { $0.has(h) } }
-            w.doneStart = Date().addingTimeInterval(-600); w.doneEnd = Date(); w.breakMin = Int(arg) ?? 3
-            w.startBreak()
-        case "away": w.startAway(w.lastExternal)
-        case "back": w.endAway(true)
-        case "extend": w.extendFocus()
+        case "focus10": w.startFocus(test: true)                     // same as Option+click on ▶ Start
+        case "stop": pq_stop(c, now()); w.awayToast?.hide()
+        case "break":                                                // a 10 s test session that has just ended
+            w.startFocus(test: true)
+            w.handle(pq_tick(c, now() + 11))
+        case "extend": pq_extend(c, now()); w.closeBreak(); w.startTick()
         case "bgbreak": w.hideBreak()
-        case "showbreak": w.showBreak()
-        case "skip": w.endBreak()
+        case "showbreak": pq_break_show(c); w.showBreak()
+        case "skip": pq_break_skip(c, now()); w.closeBreak()
         case "soon": w.showSoon()
         case "stats": w.openStats()
-        case "range": w.stats?.range = arg; w.stats?.view.needsDisplay = true
+        case "range": w.stats?.range = arg; w.stats?.reload()
         case "closestats": w.stats?.close()
         case "lang": w.setLang(arg == "ko")
-        case "select": w.sel = Int(arg) ?? -1; w.needsDisplay = true
-        case "rename": if let i = Int(arg), i < w.items.count { w.renameItem(i) }
-        case "endedit": w.endEdit(false)
+        case "select": w.select(Int32(arg) ?? 0)
         case "hotkey": w.hotkey()
         case "snap": snap(w, URL(fileURLWithPath: arg, isDirectory: true))
         case "quit": NSApp.terminate(nil)
         default: NSLog("FocusQueue debug: unknown command %@", cmd)
         }
+        w.needsDisplay = true
     }
 
     /// render every visible window of ours into PNGs (no screen-recording permission needed)

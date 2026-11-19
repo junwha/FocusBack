@@ -1,5 +1,6 @@
 #!/bin/bash
 # Build FocusQueue.app (macOS). No Xcode project needed, only the Swift toolchain (xcode-select --install).
+# The shared C core (../core/*.c) is compiled with clang and linked in statically.
 #   ./build.sh          build mac/build/FocusQueue.app
 #   ./build.sh --run    build, then restart the running widget (your task data is backed up first, never touched)
 set -euo pipefail
@@ -16,8 +17,16 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 archs=()
 for a in arm64 x86_64; do
-  swiftc -O -swift-version 5 -target "$a-apple-macos$MIN_MACOS" -o "build/FocusQueue-$a" Sources/*.swift
+  objs=()
+  for src in ../core/pq_core.c ../core/pq_strings.c; do
+    obj="build/$(basename "$src" .c)-$a.o"
+    clang -std=c11 -O2 -Wall -Wextra -target "$a-apple-macos$MIN_MACOS" -c "$src" -o "$obj"
+    objs+=("$obj")
+  done
+  swiftc -O -swift-version 5 -target "$a-apple-macos$MIN_MACOS" -I CoreModule \
+    -o "build/FocusQueue-$a" Sources/*.swift "${objs[@]}"
   archs+=("build/FocusQueue-$a")
+  rm -f "${objs[@]}"
 done
 lipo -create -output "$BIN" "${archs[@]}"
 rm -f "${archs[@]}"

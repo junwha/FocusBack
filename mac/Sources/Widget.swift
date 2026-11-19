@@ -1,5 +1,8 @@
-// The widget: task queue, input card, focus bar, grace card, break screen. Port of PQForm (PQ.cs).
+// The widget: task queue, input card, focus bar, grace card, break screen.
+// All rules and state live in the shared C core (core/pq_core.h); this file tracks windows,
+// draws what the core says and reports what the user does.
 import AppKit
+import PQCore
 
 /// text field that reports when it gets focus
 final class Field: NSTextField {
@@ -23,10 +26,7 @@ final class Widget: NSView, NSTextFieldDelegate {
     var ghostY: CGFloat { listY + listH }
     var barY: CGFloat { ghostY + (ghostShown ? row : 0) }
 
-    let store = Store()
     let tracker = Tracker()
-    var items: [Item] = []
-    var groupNames: [Int: String] = [:]
     var panel: FloatPanel!
     let input = Field()
     let editBox = Field()
@@ -34,56 +34,27 @@ final class Widget: NSView, NSTextFieldDelegate {
     var editCommit: ((String) -> Void)?
     var heights: [CGFloat] = []
     var scrollY: CGFloat = 0
-    var sel = -1
+    var sel: Int32 = 0                  // selected item id (0 = none)
     var dragIndex = -1, tipIndex = -1
     var dragStart = NSPoint.zero
-    var dragItem: Item?      // card currently lifted
-    var mergeTarget: Item?   // card it would be grouped with if dropped now
+    var dragItem: Int32 = 0             // card currently lifted
+    var mergeTarget: Int32 = 0          // card it would be grouped with if dropped now
     var dropTime: TimeInterval = 0
-    var lastExternal: WinRef? // last window the user was in that is not this widget
+    var lastExternal: WinRef?           // last window the user was in that is not this widget
     var forceGhost = false, ghostShown = true
     var ghostTextX: CGFloat = 0
     var repaint: Timer?
-
-    // ---- focus timer state ----
-    static let tierFocus = [15, 30, 60], tierBreak = [3, 5, 15]
-    var selTier = 0, focusTier = 0
-    var barItem: Item?
-    var focusing = false
-    var focusStart = Date(), focusEnd = Date()
-    var freezeFrom = Date()   // start of the current segment (others' clocks frozen from here; logged from here)
-    var pausedSec: Double = 0 // paused (away) seconds inside the current segment
-    var plannedMin = 0
-    var extension_ = false    // current segment is a "+5 min" extension
-    var doneStart = Date(), doneEnd = Date()
-    var focusWins: [WinRef] = []
-    var focusItem: Item?
-    var warnedItem: Item?; var warnTime: TimeInterval = 0
-    var barNote = ""; var barWarn = false; var barNoteUntil = Date.distantPast
-    var minusR = NSRect.zero, plusR = NSRect.zero, goR = NSRect.zero, stopR = NSRect.zero
     var tick: Timer?
-    var lastFocusItem: Item?
+    var minusR = NSRect.zero, plusR = NSRect.zero, goR = NSRect.zero, stopR = NSRect.zero
 
-    // ---- away (left the task while focusing) ----
-    var away = false
-    var awayStart = Date()
-    let awaySec: Double = 60
     var awayToast: Toast?
-    var awayHome: WinRef?
     var backR = NSRect.zero, quitR = NSRect.zero
-
-    // ---- break ----
     var breakWins: [FloatPanel]?
-    var breakStart = Date(), breakEnd = Date()
-    var breakMin = 5
     var skipR = NSRect.zero, extR = NSRect.zero, bgR = NSRect.zero
-    var doneWins: [WinRef]?; var doneItem: Item?; var doneTier = 0
-    let extendMin = 5
-    var breakHidden = false, soonShown = false
     var soonToast: Toast?
-    let soonSec: Double = 10
-
     var stats: Stats?
+
+    var c: OpaquePointer { core.c }
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -91,12 +62,9 @@ final class Widget: NSView, NSTextFieldDelegate {
 
     init() {
         super.init(frame: NSRect(x: 0, y: 0, width: 280, height: 200))
-        store.backupItems() // keep a copy before anything is written
-        Lang.load(store.dir.appendingPathComponent("lang.txt"))
-
         panel = makePanel(NSRect(x: 0, y: 0, width: W, height: 200), level: .floating)
         panel.contentView = self
-        panel.alphaValue = store.loadOpacity()
+        panel.alphaValue = CGFloat(pq_opacity(c))
         wantsLayer = true
         layer?.cornerRadius = 8
         layer?.masksToBounds = true
@@ -121,11 +89,7 @@ final class Widget: NSView, NSTextFieldDelegate {
 
         tracker.onChange = { [unowned self] in self.track(self.tracker.current()) }
         tracker.start()
-
-        groupNames = store.loadGroups()
-        items = store.loadItems()
-        for it in items { tracker.resolve(it) } // re-link to the live windows after a restart
-        normalizeGroups()
+        for id in core.ids { tracker.resolve(id) } // re-link to the live windows after a restart
         relayout()
         track(tracker.current())
         fit()
@@ -153,58 +117,49 @@ final class Widget: NSView, NSTextFieldDelegate {
     // ---------- window tracking ----------
 
     func track(_ h: WinRef?) {
-        if tracker.refreshTrust() { relayout(); fit(); needsDisplay = true }
+        if tracker.refreshTrust() {
+            for id in core.ids { tracker.resolve(id) } // per-window <-> per-app
+            relayout(); fit(); needsDisplay = true
+        }
         guard let h = h else { return }
-        if h.same(lastExternal) { return }
         let prev = lastExternal
-        lastExternal = h
-        if focusing {
-            if !focusOwns(h) { if !away { startAway(prev) } } // left the task: 1-minute grace
-            else if away { endAway(true) }                   // came back in time: resume
-        }
-        var changed = false
-        for it in items {
-            let inPrev = it.has(prev), inNow = it.has(h)
-            if inNow {
-                it.lastWid = h.wid
-                for w in it.wins {
-                    if winMatch(w, h) { if w.wid == h.wid { w.title = h.title }; continue } // keep title fresh for restarts
-                    // came back to one window of the task -> bring its partners up too (no focus change)
-                    if !inPrev && w.wid != 0 && tracker.trusted { tracker.raise(w, activate: false) }
-                }
+        // came back to one window of a task -> bring its partner windows up too (no focus change)
+        var partners: [(pq_win, String)] = []
+        if tracker.trusted {
+            for id in core.ids where core.has(id, h) && !core.has(id, prev) {
+                for w in core.wins(id) where w.key > 0 && w.key != h.key { partners.append((w.key, w.proc)) }
             }
-            // entering or leaving the task (or its group) restarts its clock; moving inside the group doesn't
-            if gHas(it, prev) != gHas(it, h) { it.created = Date(); changed = true }
         }
-        if changed { save() }
-        updateGhost()     // entry appears only in windows without an item
-        updateBarItem()   // bar shows this task's next session length
+        lastExternal = h
+        let ev = pq_activate(c, h.key, h.title, now())
+        if ev == 0 { return }
+        handle(ev)
+        for (k, p) in partners { tracker.raise(k, p, activate: false) }
+        updateGhost()
         needsDisplay = true
     }
 
-    func makeWin(_ h: WinRef) -> Win { Win(wid: h.wid, proc: h.proc, title: h.title) }
-
     /// link the item to the window you were in + whatever is tiled beside it
-    func attach(_ it: Item, _ h: WinRef?) {
+    func attach(_ id: Int32, _ h: WinRef?) {
         guard let h = h else { return }
-        it.wins = tracker.snapGroup(h).map(makeWin)
-        it.lastWid = h.wid
+        for (i, w) in tracker.snapGroup(h).enumerated() { pq_link(c, id, w.key, w.proc, w.title, i == 0 ? 1 : 0) }
     }
 
-    func addWindow(_ it: Item?, _ h: WinRef?) {
-        guard let it = it, let h = h, !it.has(h) else { return }
-        it.wins.append(makeWin(h))
+    func addWindow(_ id: Int32, _ h: WinRef?) {
+        guard id != 0, let h = h else { return }
+        pq_link(c, id, h.key, h.proc, h.title, 0)
         changed()
     }
 
     /// bring all of the task's windows forward; focus the one you used last
-    func switchTo(_ it: Item?) {
-        guard let it = it else { return }
-        tracker.resolve(it)
-        let live = it.wins.filter { tracker.alive($0) }
-        guard let focus = live.first(where: { $0.wid != 0 && $0.wid == it.lastWid }) ?? live.first else { Sound.beep(); return }
-        for w in live where w !== focus { tracker.raise(w, activate: false) }
-        tracker.raise(focus, activate: true)
+    func switchTo(_ id: Int32) {
+        guard id != 0 else { return }
+        tracker.resolve(id)
+        let live = core.wins(id).filter { tracker.alive($0.key, $0.proc) }
+        let last = pq_last_win(c, id)
+        guard let focus = live.first(where: { $0.key == last }) ?? live.first else { Sound.beep(); return }
+        for w in live where w.key != focus.key { tracker.raise(w.key, w.proc, activate: false) }
+        tracker.raise(focus.key, focus.proc, activate: true)
     }
 
     /// give the keyboard back to the window you were working in
@@ -223,8 +178,7 @@ final class Widget: NSView, NSTextFieldDelegate {
     /// top-right of the main screen
     func placeDefault() {
         let wa = primary.visibleFrame
-        let h = panel.frame.height
-        panel.setFrameOrigin(NSPoint(x: wa.maxX - W - 10, y: wa.maxY - 44 - h))
+        panel.setFrameOrigin(NSPoint(x: wa.maxX - W - 10, y: wa.maxY - 44 - panel.frame.height))
     }
 
     func ensureOnScreen() {
@@ -235,7 +189,6 @@ final class Widget: NSView, NSTextFieldDelegate {
     }
 
     func showAgain() {
-        ensureOnScreen()
         placeDefault()
         panel.orderFrontRegardless()
     }
@@ -253,7 +206,7 @@ final class Widget: NSView, NSTextFieldDelegate {
 
     func fit() {
         var total: CGFloat = 0
-        for i in items.indices { total += rowHeight(i) }
+        for i in 0..<core.count { total += rowHeight(i) }
         let maxH = primary.visibleFrame.height * 2 / 3
         let ghost = ghostShown ? row : 0
         listH = max(0, min(total, maxH - padT - headerH - noticeH - ghost - barH - padB)) // scrolls if very long
@@ -269,76 +222,69 @@ final class Widget: NSView, NSTextFieldDelegate {
         needsDisplay = true
     }
 
-    func changed() { save(); relayout(); updateGhost(); updateBarItem(); fit(); needsDisplay = true }
-
-    func save() { store.save(items, groupNames: groupNames) }
+    /// the queue changed (the core already saved it)
+    func changed() { relayout(); updateGhost(); fit(); needsDisplay = true }
 
     // ---------- language ----------
 
     func setLang(_ ko: Bool) {
-        Lang.ko = ko
-        try? (ko ? "ko" : "en").write(to: store.dir.appendingPathComponent("lang.txt"), atomically: true, encoding: .utf8)
+        pq_set_lang_ko(c, ko ? 1 : 0)
         setCue()
         needsDisplay = true
         awayToast?.view.needsDisplay = true
         soonToast?.view.needsDisplay = true
         breakWins?.forEach { $0.contentView?.needsDisplay = true }
-        stats?.view.needsDisplay = true
+        if let s = stats { s.reload() }
     }
 
-    static func headerText() -> String { "✿  " + T("To-do", "할 일") + "    ⌃⌥Space" }
+    static func headerText() -> String { "✿  " + tr("header.title") + "    ⌃⌥Space" }
 
     func setCue() {
-        input.placeholderAttributedString = NSAttributedString(string: T("+ task for this window", "+ 이 창의 할 일"),
+        input.placeholderAttributedString = NSAttributedString(string: tr("entry.placeholder"),
                                                                attributes: [.font: F.main, .foregroundColor: P.muted])
     }
 
     // ---------- menus ----------
 
     func opacityMenu() -> NSMenuItem {
-        let m = NSMenuItem(title: T("Opacity", "투명도"), action: nil, keyEquivalent: "")
+        let m = NSMenuItem(title: tr("menu.opacity"), action: nil, keyEquivalent: "")
         let sub = NSMenu()
+        let cur = Int((pq_opacity(c) * 100).rounded())
         for p in [100, 90, 80, 70, 60, 50, 40] {
-            sub.addItem(menuItem("\(p)%", checked: Int((panel.alphaValue * 100).rounded()) == p) { [unowned self] in self.setOpacity(CGFloat(p) / 100) })
+            sub.addItem(menuItem("\(p)%", checked: cur == p) { [unowned self] in self.setOpacity(Double(p) / 100) })
         }
         m.submenu = sub
         return m
     }
 
     func commonItems(_ m: NSMenu) {
-        m.addItem(menuItem(T("Stats", "통계 보기")) { [unowned self] in self.openStats() })
-        m.addItem(menuItem(T("Open log sheet (CSV)", "기록 시트 열기 (CSV)")) { [unowned self] in self.openLogSheet() })
+        m.addItem(menuItem(tr("menu.stats")) { [unowned self] in self.openStats() })
+        m.addItem(menuItem(tr("menu.open_log")) { [unowned self] in self.openLogSheet() })
         m.addItem(opacityMenu())
-        let lm = NSMenuItem(title: T("Language", "언어"), action: nil, keyEquivalent: "")
+        let lm = NSMenuItem(title: tr("menu.language"), action: nil, keyEquivalent: "")
         let sub = NSMenu()
-        sub.addItem(menuItem("English", checked: !Lang.ko) { [unowned self] in self.setLang(false) })
-        sub.addItem(menuItem("한국어", checked: Lang.ko) { [unowned self] in self.setLang(true) })
+        sub.addItem(menuItem("English", checked: !core.ko) { [unowned self] in self.setLang(false) })
+        sub.addItem(menuItem("한국어", checked: core.ko) { [unowned self] in self.setLang(true) })
         lm.submenu = sub
         m.addItem(lm)
-        m.addItem(menuItem(T("Quit", "종료")) { NSApp.terminate(nil) })
+        m.addItem(menuItem(tr("menu.quit")) { NSApp.terminate(nil) })
     }
 
     func itemMenu() -> NSMenu {
         let m = NSMenu(); m.font = F.menu; m.autoenablesItems = false
-        let it = sel >= 0 && sel < items.count ? items[sel] : nil
-        m.addItem(menuItem(T("Go to this window (click / Enter)", "이 창으로 이동 (클릭 / Enter)")) { [unowned self] in self.trySwitch(it) })
-        m.addItem(menuItem(T("Done (Shift+click / Del)", "완료 (Shift+클릭 / Del)")) { [unowned self] in self.removeSelected() })
-        m.addItem(menuItem(T("+ Also link the previous window", "+ 직전 창도 이 할 일에 연결")) { [unowned self] in self.addWindow(it, self.lastExternal) })
-        m.addItem(menuItem(T("Re-link windows (previous + neighbor)", "창 연결 다시 하기 (직전 창 + 옆 창)")) { [unowned self] in
-            if let it = it { self.attach(it, self.lastExternal); self.changed() }
+        let id = sel
+        m.addItem(menuItem(tr("menu.go")) { [unowned self] in self.trySwitch(id) })
+        m.addItem(menuItem(tr("menu.done_mac")) { [unowned self] in self.removeSelected() })
+        m.addItem(menuItem(tr("menu.link_prev")) { [unowned self] in self.addWindow(id, self.lastExternal) })
+        m.addItem(menuItem(tr("menu.relink")) { [unowned self] in
+            if id != 0 { self.attach(id, self.lastExternal); self.changed() }
         })
-        if let it = it, it.groupId != 0 {
-            m.addItem(menuItem(T("Remove from group", "묶음에서 빼기")) { [unowned self] in self.leaveGroup(it) })
+        if id != 0 && core.group(id) != 0 {
+            m.addItem(menuItem(tr("menu.leave_group")) { [unowned self] in pq_leave(self.c, id); self.sel = id; self.changed() })
         }
-        m.addItem(menuItem(T("Move to top", "맨 위로")) { [unowned self] in self.moveSelected(-self.sel) })
-        m.addItem(menuItem(T("Reset timer", "타이머 리셋")) { [unowned self] in self.resetSelected() })
-        m.addItem(menuItem(T("Restart focus rounds (from 15 min)", "집중 회차 처음으로 (15분부터)")) { [unowned self] in
-            if let it = it {
-                self.setTaskSessions(it, 0)
-                if it === self.barItem || Widget.sameGroup(it, self.barItem) { self.selTier = 0 }
-                self.changed()
-            }
-        })
+        m.addItem(menuItem(tr("menu.to_top")) { [unowned self] in if id != 0 { pq_move(self.c, id, 0, 0); self.changed() } })
+        m.addItem(menuItem(tr("menu.reset_timer")) { [unowned self] in if id != 0 { pq_reset_age(self.c, id, now()); self.changed() } })
+        m.addItem(menuItem(tr("menu.reset_rounds")) { [unowned self] in if id != 0 { pq_reset_rounds(self.c, id); self.changed() } })
         m.addItem(.separator())
         commonItems(m)
         return m
@@ -350,10 +296,9 @@ final class Widget: NSView, NSTextFieldDelegate {
         return m
     }
 
-    func setOpacity(_ v: CGFloat) {
-        let x = max(0.3, min(1.0, (v * 100).rounded() / 100))
-        panel.alphaValue = x
-        store.saveOpacity(x)
+    func setOpacity(_ v: Double) {
+        pq_set_opacity(c, v)
+        panel.alphaValue = CGFloat(pq_opacity(c))
     }
 
     // ---------- input ----------
@@ -363,36 +308,35 @@ final class Widget: NSView, NSTextFieldDelegate {
         return panel.firstResponder === ed
     }
 
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy cmd: Selector) -> Bool {
         if control === input {
-            if sel == #selector(NSResponder.insertNewline(_:)) || sel == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) {
+            if cmd == #selector(NSResponder.insertNewline(_:)) || cmd == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) {
                 let t = input.stringValue.trimmingCharacters(in: .whitespaces)
                 if t.isEmpty { return true }
-                let it = Item(); it.text = t; it.created = Date()
-                attach(it, lastExternal)
-                let shift = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
-                if shift { items.insert(it, at: 0) } else { items.append(it) } // Shift+Enter = top
+                let shift = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false // Shift+Enter = top
+                let id = pq_add(c, t, shift ? 1 : 0, now())
+                attach(id, lastExternal)
                 input.stringValue = ""
                 forceGhost = false
                 backToWork() // the entry turns into the item in place and you're back in your window
                 changed()
                 return true
             }
-            if sel == #selector(NSResponder.cancelOperation(_:)) {
+            if cmd == #selector(NSResponder.cancelOperation(_:)) {
                 input.stringValue = ""
                 forceGhost = false
                 backToWork()
                 updateGhost()
                 return true
             }
-            if sel == #selector(NSResponder.moveUp(_:)) && !items.isEmpty {
-                panel.makeFirstResponder(self); sel_(items.count - 1); return true
+            if cmd == #selector(NSResponder.moveUp(_:)) && core.count > 0 {
+                panel.makeFirstResponder(self); select(core.id(core.count - 1)); return true
             }
             return false
         }
         if control === editBox {
-            if sel == #selector(NSResponder.insertNewline(_:)) { endEdit(true); return true }
-            if sel == #selector(NSResponder.cancelOperation(_:)) { endEdit(false); return true }
+            if cmd == #selector(NSResponder.insertNewline(_:)) { endEdit(true); return true }
+            if cmd == #selector(NSResponder.cancelOperation(_:)) { endEdit(false); return true }
         }
         return false
     }
@@ -405,16 +349,21 @@ final class Widget: NSView, NSTextFieldDelegate {
         else if f === editBox { endEdit(true) }
     }
 
-    private func sel_(_ i: Int) { sel = i; needsDisplay = true }
+    func select(_ id: Int32) { sel = id; needsDisplay = true }
 
-    /// list keys (after Up from the entry): Del = done, Enter = go, Opt+Up/Down = move, Esc = back
+    /// list keys (after Up from the entry): Delete = done, Enter = go, Opt+Up/Down = move, Esc = back
     func listKey(_ e: NSEvent) -> Bool {
         guard panel.firstResponder === self else { return false }
+        let i = core.index(sel)
         switch Int(e.keyCode) {
         case 51, 117: removeSelected(); return true
-        case 36, 76: trySwitch(sel >= 0 && sel < items.count ? items[sel] : nil); return true
-        case 126: if e.modifierFlags.contains(.option) { moveSelected(-1) } else if sel > 0 { sel_(sel - 1) }; return true
-        case 125: if e.modifierFlags.contains(.option) { moveSelected(1) } else if sel + 1 < items.count { sel_(sel + 1) }; return true
+        case 36, 76: trySwitch(sel); return true
+        case 126:
+            if e.modifierFlags.contains(.option) { moveSelected(-1) } else if i > 0 { select(core.id(i - 1)) }
+            return true
+        case 125:
+            if e.modifierFlags.contains(.option) { moveSelected(1) } else if i >= 0 && i + 1 < core.count { select(core.id(i + 1)) }
+            return true
         case 53: backToWork(); return true
         default: return false
         }
@@ -434,7 +383,7 @@ final class Widget: NSView, NSTextFieldDelegate {
 
     func index(atListY y: CGFloat) -> Int {
         var top = -scrollY
-        for i in items.indices {
+        for i in 0..<core.count {
             let h = rowHeight(i)
             if y >= top && y < top + h { return i }
             top += h
@@ -450,25 +399,25 @@ final class Widget: NSView, NSTextFieldDelegate {
 
     /// where the card sits inside its row (rows of a group leave room for the section frame)
     func cardBounds(_ i: Int, _ b: NSRect) -> NSRect {
-        let it = items[i]
-        if it.groupId == 0 { return b }
-        let top = firstOfGroup(i) ? hdrH : 0, bot = lastOfGroup(i) ? secPad : 0
+        if core.group(core.id(i)) == 0 { return b }
+        let top = core.firstOfGroup(i) ? hdrH : 0, bot = core.lastOfGroup(i) ? secPad : 0
         return NSRect(x: b.minX + secPad, y: b.minY + top, width: b.width - secPad * 2, height: b.height - top - bot)
     }
 
     /// section rectangle (list coordinates) of the group containing row i
     func sectionRect(_ i: Int) -> NSRect {
+        let g = core.group(core.id(i))
         var a = i, b = i
-        while a > 0 && Widget.sameGroup(items[a - 1], items[i]) { a -= 1 }
-        while b + 1 < items.count && Widget.sameGroup(items[b + 1], items[i]) { b += 1 }
+        while a > 0 && core.group(core.id(a - 1)) == g { a -= 1 }
+        while b + 1 < core.count && core.group(core.id(b + 1)) == g { b += 1 }
         let ra = itemRect(a), rb = itemRect(b)
-        let top = ra.minY + (firstOfGroup(a) ? 3 : 0)
-        return NSRect(x: 0, y: top, width: listW - 1, height: rb.maxY - (lastOfGroup(b) ? 1 : 0) - top)
+        let top = ra.minY + (core.firstOfGroup(a) ? 3 : 0)
+        return NSRect(x: 0, y: top, width: listW - 1, height: rb.maxY - (core.lastOfGroup(b) ? 1 : 0) - top)
     }
 
     /// recompute row heights (section header / bottom padding)
     func relayout() {
-        heights = items.indices.map { i in row + (firstOfGroup(i) ? hdrH : 0) + (lastOfGroup(i) ? secPad : 0) }
+        heights = (0..<core.count).map { i in row + (core.firstOfGroup(i) ? hdrH : 0) + (core.lastOfGroup(i) ? secPad : 0) }
     }
 
     // ---------- drawing ----------
@@ -478,53 +427,49 @@ final class Widget: NSView, NSTextFieldDelegate {
         fill(NSBezierPath(rect: bounds), P.bg)
         drawText(Widget.headerText(), F.header, NSRect(x: padL, y: padT, width: listW, height: headerH), P.muted)
         if !tracker.trusted {
-            drawText(T("⚠ Per-app tracking · click to allow Accessibility", "⚠ 앱 단위로 추적 중 · 클릭해서 손쉬운 사용 허용"),
-                     F.small, NSRect(x: padL, y: padT + headerH, width: listW, height: noticeH - 2), P.redDeep)
+            drawText("⚠ " + tr("mac.ax_notice"), F.small, NSRect(x: padL, y: padT + headerH, width: listW, height: noticeH - 2), P.redDeep)
         }
         NSGraphicsContext.saveGraphicsState()
         NSRect(x: padL, y: listY, width: listW, height: listH).clip()
         let t = NSAffineTransform(); t.translateX(by: padL, yBy: listY); t.concat()
-        for i in items.indices {
+        let tnow = now()
+        for i in 0..<core.count {
             let b = itemRect(i)
             if b.maxY < 0 || b.minY > listH { continue }
-            drawItem(i, b)
+            drawItem(i, b, tnow)
         }
         NSGraphicsContext.restoreGraphicsState()
         if ghostShown { drawGhost() }
         drawBar()
     }
 
-    func drawItem(_ i: Int, _ b: NSRect) {
-        let it = items[i]
-        let active = gHas(it, lastExternal) // whole group shows "working"
-        // while focusing, the other items' clocks are frozen and they stay white
-        let frozen = focusing && !active && !inFocus(it)
-        let now = frozen ? (it.created < freezeFrom ? freezeFrom : it.created) : Date()
-        let m = now.timeIntervalSince(it.created) / 60
-        // active window's item = green; others white, one step redder per 10 min (max 6 steps)
-        let t: CGFloat = frozen ? 0 : CGFloat(min(6, max(0, Int(m / 10)))) / 6
+    func drawItem(_ i: Int, _ b: NSRect, _ tnow: Double) {
+        let id = core.id(i)
+        let active = pq_active(c, id) != 0 // whole group shows "working"
+        // active window's item = green; others white, one step redder per 10 min (max 6 steps); frozen while focusing
+        let t = CGFloat(pq_heat(c, id, tnow)) / 6
         var fillC = active ? P.greenFill : lerp(.white, P.redFill, t)
         let deep = active ? P.greenDeep : lerp(P.grayDeep, P.redDeep, t)
-        let isSel = i == sel
-        let lifted = it === dragItem
+        let lifted = id == dragItem
+        let g = core.group(id)
 
         // section: one rounded tinted box around the whole group; each row paints its slice of it
-        if it.groupId != 0 {
-            let gc = P.groupColor(it.groupId)
+        if g != 0 {
+            let gc = P.groupColor(Int(g))
             let sr = sectionRect(i)
             NSGraphicsContext.saveGraphicsState()
             b.clip()
             let p = round(sr, 13)
             fill(p, lerp(P.bg, gc, 0.16))
             stroke(p, lerp(P.bg, gc, 0.45), 1.2)
-            if firstOfGroup(i) {
-                let cnt = items.filter { Widget.sameGroup($0, it) }.count
+            if core.firstOfGroup(i) {
+                let cnt = pq_group_size(c, g)
                 let hr = NSRect(x: sr.minX + 12, y: sr.minY + 1, width: sr.width - 24, height: hdrH - 4)
-                let name = groupName(it.groupId)
+                let name = core.groupName(g)
                 let editingHere = editCommit != nil && !editBox.isHidden && abs(editBox.frame.minY - (listY + hr.minY)) < hdrH
                 if !editingHere {
-                    drawText(name, F.age, hr, lerp(gc, P.ink, 0.45))
-                    let nw = min(measure(name, F.age), hr.width)
+                    drawText(name, F.age, NSRect(x: hr.minX, y: hr.minY, width: hr.width - 40, height: hr.height), lerp(gc, P.ink, 0.45))
+                    let nw = min(measure(name, F.age), hr.width - 40)
                     drawText("· \(cnt)", F.age, NSRect(x: hr.minX + nw + 6, y: hr.minY, width: 40, height: hr.height), lerp(gc, P.bg, 0.25))
                 }
             }
@@ -540,15 +485,13 @@ final class Widget: NSView, NSTextFieldDelegate {
         }
         let path = round(r.insetBy(dx: 0.5, dy: 0.5), 9)
         fill(path, fillC)
-        if isSel || lifted { stroke(path, deep, lifted ? 2 : 1.6) } else { stroke(path, lerp(fillC, deep, 0.25), 1) }
-        if it === mergeTarget { // "drop here to group"
-            stroke(path, it.groupId != 0 ? P.groupColor(it.groupId) : P.groupColor(1), 2.4, dash: true)
+        if id == sel || lifted { stroke(path, deep, lifted ? 2 : 1.6) } else { stroke(path, lerp(fillC, deep, 0.25), 1) }
+        if id == mergeTarget { // "drop here to group"
+            stroke(path, P.groupColor(g != 0 ? Int(g) : 1), 2.4, dash: true)
         }
 
         // age badge on the right
-        let mins = Int(max(0, m))
-        let age = active ? (focusing ? T("● focusing", "● 집중 중") : T("● working", "● 작업 중"))
-            : mins < 60 ? "\(mins)m" : "\(mins / 60)h" + String(format: "%02d", mins % 60)
+        let age = active ? tr(core.focusing ? "item.focusing" : "item.working") : str(pq_fmt_age(c, pq_age_min(c, id, tnow)))
         let bh: CGFloat = 18, bw = measure(age, F.age) + 12
         let badge = NSRect(x: r.maxX - bw - 6, y: r.minY + (r.height - bh) / 2, width: bw, height: bh)
         fill(round(badge, bh / 2), lerp(fillC, deep, 0.12))
@@ -556,7 +499,7 @@ final class Widget: NSView, NSTextFieldDelegate {
 
         // index + text
         let txtR = NSRect(x: r.minX + doneW, y: r.minY, width: badge.minX - r.minX - doneW - 6, height: r.height)
-        drawText("\(i + 1)   " + it.text, F.main, txtR, P.ink)
+        drawText("\(i + 1)   " + core.text(id), F.main, txtR, P.ink)
     }
 
     func drawGhost() {
@@ -564,57 +507,59 @@ final class Widget: NSView, NSTextFieldDelegate {
         let p = round(r.insetBy(dx: 0.5, dy: 0.5), 9)
         fill(p, P.inputBg)
         stroke(p, isFocused(input) ? P.grayDeep : P.dash, 1.2, dash: true)
-        drawText("\(items.count + 1)", F.main, NSRect(x: r.minX + doneW, y: r.minY, width: ghostTextX - doneW, height: r.height), P.muted)
+        drawText("\(core.count + 1)", F.main, NSRect(x: r.minX + doneW, y: r.minY, width: ghostTextX - doneW, height: r.height), P.muted)
     }
 
     func layoutGhost() {
         input.isHidden = !ghostShown
         let r = cardRect(NSRect(x: padL, y: ghostY, width: listW, height: row))
-        ghostTextX = doneW + measure("\(items.count + 1)   ", F.main) - 3
+        ghostTextX = doneW + measure("\(core.count + 1)   ", F.main) - 3
         let h = ceil(F.main.ascender - F.main.descender + F.main.leading) + 2
         input.frame = NSRect(x: r.minX + ghostTextX, y: r.minY + (r.height - h) / 2, width: r.width - ghostTextX - 10, height: h)
     }
 
     /// ghost entry only when the window you're in isn't linked to any item (or nothing is queued yet)
     func updateGhost() {
-        let linked = items.contains { $0.has(lastExternal) }
-        let show = forceGhost || isFocused(input) || !input.stringValue.isEmpty || !linked || items.isEmpty
+        let show = forceGhost || isFocused(input) || !input.stringValue.isEmpty || pq_needs_entry(c) != 0
         if ghostShown != show { ghostShown = show; fit() }
         layoutGhost()
         needsDisplay = true
     }
 
     func drawBar() {
+        let tnow = now()
         let r = cardRect(NSRect(x: padL, y: barY + 4, width: listW, height: barH - 4))
         minusR = .zero; plusR = .zero; goR = .zero; stopR = .zero
-        let note = Date() < barNoteUntil
+        let note = core.note()
+        let warn = note != nil && pq_note_warn(c) != 0
         let ph: CGFloat = 20, py = r.minY + (r.height - ph) / 2
         let card = round(r.insetBy(dx: 0.5, dy: 0.5), 9)
+        let state = core.state
 
-        if breakWins != nil {
+        if state == PQ_BREAK {
             fill(card, P.lav)
-            drawText(T("Break  ", "휴식 중  ") + clockText(breakEnd.timeIntervalSinceNow) + (breakHidden ? T("  · click: break screen", "  · 클릭: 휴식 화면") : ""),
-                     F.age, NSRect(x: r.minX + doneW, y: r.minY, width: r.width - doneW * 2, height: r.height), P.lavDeep)
+            let left = clockText(pq_break_left(c, tnow))
+            drawText(core.fmt(pq_break_hidden(c) != 0 ? "bar.break_hidden" : "bar.break", left), F.age,
+                     NSRect(x: r.minX + doneW, y: r.minY, width: r.width - doneW * 2, height: r.height), P.lavDeep)
             return
         }
-        if focusing {
-            let total = focusEnd.timeIntervalSince(focusStart), left = focusEnd.timeIntervalSince(away ? awayStart : Date())
-            let done = CGFloat(max(0, min(1, 1 - left / total)))
+        if state == PQ_FOCUS || state == PQ_AWAY {
+            let away = state == PQ_AWAY
+            let done = CGFloat(pq_focus_progress(c, tnow))
             fill(card, .white)
             NSGraphicsContext.saveGraphicsState()
             card.addClip()
             P.greenFill.setFill()
             NSRect(x: r.minX, y: r.minY, width: r.width * done, height: r.height + 1).fill()
             NSGraphicsContext.restoreGraphicsState()
-            stroke(card, (barWarn && note) || away ? P.redDeep : P.greenDeep, 1.4)
+            stroke(card, warn || away ? P.redDeep : P.greenDeep, 1.4)
             let sw: CGFloat = 54
             stopR = NSRect(x: r.maxX - sw - 6, y: py, width: sw, height: ph)
-            pill(stopR, P.pill, P.grayDeep, T("■ Stop", "■ 그만"), F.age)
-            let txt = note ? barNote
-                : away ? T("⏸ Paused · back within ", "⏸ 일시정지 · ") + clockText(awaySec - Date().timeIntervalSince(awayStart)) + T("", " 안에 복귀")
-                : T("Focus  ", "집중  ") + clockText(left) + T("  left", "  남음")
+            pill(stopR, P.pill, P.grayDeep, tr("bar.stop"), F.age)
+            let txt = note ?? (away ? core.fmt("bar.paused", clockText(pq_away_left(c, tnow)))
+                                    : core.fmt("bar.focus_left", clockText(pq_focus_left(c, tnow))))
             drawText(txt, F.age, NSRect(x: r.minX + doneW, y: r.minY, width: stopR.minX - r.minX - doneW - 4, height: r.height),
-                     (note && barWarn) || away ? P.redDeep : P.greenDeep)
+                     warn || away ? P.redDeep : P.greenDeep)
             return
         }
         // idle: [<] 30 min [>]      [▶ Start]
@@ -622,22 +567,23 @@ final class Widget: NSView, NSTextFieldDelegate {
         stroke(card, P.dash, 1)
         let gw: CGFloat = 58
         goR = NSRect(x: r.maxX - gw - 6, y: py, width: gw, height: ph)
-        pill(goR, P.greenFill, P.greenDeep, T("▶ Start", "▶ 시작"), F.age)
-        if note {
-            drawText(barNote, F.age, NSRect(x: r.minX + doneW, y: r.minY, width: goR.minX - r.minX - doneW - 4, height: r.height),
-                     barWarn ? P.redDeep : P.greenDeep)
+        pill(goR, P.greenFill, P.greenDeep, tr("bar.start"), F.age)
+        if let n = note {
+            drawText(n, F.age, NSRect(x: r.minX + doneW, y: r.minY, width: goR.minX - r.minX - doneW - 4, height: r.height),
+                     warn ? P.redDeep : P.greenDeep)
             return
         }
+        let st = Int(pq_sel_tier(c)), last = Int(pq_tier_count()) - 1
         let bs = ph, x = r.minX + 8
         minusR = NSRect(x: x, y: py, width: bs, height: bs)
-        pill(minusR, P.pillLight, selTier > 0 ? P.grayDeep : P.pillOff, "<", F.age)
+        pill(minusR, P.pillLight, st > 0 ? P.grayDeep : P.pillOff, "<", F.age)
         let lw: CGFloat = 44
-        drawText("\(Widget.tierFocus[selTier])" + T(" min", "분"), F.main, NSRect(x: minusR.maxX, y: r.minY, width: lw, height: r.height), P.ink, .center)
+        drawText(core.fmt("bar.minutes", "\(pq_tier_focus(Int32(st)))"), F.main, NSRect(x: minusR.maxX, y: r.minY, width: lw, height: r.height), P.ink, .center)
         plusR = NSRect(x: minusR.maxX + lw, y: py, width: bs, height: bs)
         // which round of this task + its break length
-        drawText(T("R\(selTier + 1) · \(Widget.tierBreak[selTier])m rest", "\(selTier + 1)회차 · 휴식 \(Widget.tierBreak[selTier])분"),
+        drawText(core.fmt("bar.round", "\(st + 1)", "\(pq_tier_break(Int32(st)))"),
                  F.age, NSRect(x: plusR.maxX + 6, y: r.minY, width: goR.minX - plusR.maxX - 8, height: r.height), P.muted)
-        pill(plusR, P.pillLight, selTier < Widget.tierFocus.count - 1 ? P.grayDeep : P.pillOff, ">", F.age)
+        pill(plusR, P.pillLight, st < last ? P.grayDeep : P.pillOff, ">", F.age)
     }
 
     // ---------- mouse ----------
@@ -648,15 +594,15 @@ final class Widget: NSView, NSTextFieldDelegate {
     override func mouseDown(with e: NSEvent) {
         let p = convert(e.locationInWindow, from: nil)
         tip.hide()
-        if e.modifierFlags.contains(.control) { rightMouseDown(with: e); return } // Ctrl+click = right-click on macOS
+        if e.modifierFlags.contains(.control) && !goR.contains(p) { rightMouseDown(with: e); return } // Ctrl+click = right-click
         if p.y < padT + headerH { panel.performDrag(with: e); return }              // drag the widget by its header
         if p.y < listY { tracker.promptForTrust(); return }                          // permission notice
         if inList(p) {
-            if dragItem != nil || Date().timeIntervalSince1970 - dropTime < 0.3 { dragIndex = -1; return }
+            if dragItem != 0 || Date().timeIntervalSince1970 - dropTime < 0.3 { dragIndex = -1; return }
             let lp = listPoint(p)
             dragIndex = index(atListY: lp.y)
             dragStart = lp
-            if dragIndex >= 0 { sel_(dragIndex) }
+            if dragIndex >= 0 { select(core.id(dragIndex)) }
             return
         }
         if ghostShown && p.y >= ghostY && p.y < ghostY + row { panel.makeKey(); panel.makeFirstResponder(input); return }
@@ -670,40 +616,39 @@ final class Widget: NSView, NSTextFieldDelegate {
         if inList(p) {
             let i = index(atListY: listPoint(p).y)
             if i < 0 { return }
-            sel_(i)
+            select(core.id(i))
             NSMenu.popUpContextMenu(itemMenu(), with: e, for: self)
         }
     }
 
     override func mouseDragged(with e: NSEvent) {
-        guard dragItem != nil || dragIndex >= 0 else { return }
+        guard dragItem != 0 || dragIndex >= 0 else { return }
         let lp = listPoint(convert(e.locationInWindow, from: nil))
-        if dragItem == nil {
+        if dragItem == 0 {
             if abs(lp.y - dragStart.y) < 4 { return }
-            dragItem = items[dragIndex] // lift
-            dragIndex = -1              // a drag is not a click
+            dragItem = core.id(dragIndex) // lift
+            dragIndex = -1                // a drag is not a click
             NSCursor.closedHand.set()
             tip.hide(); tipIndex = -1
             needsDisplay = true
         }
         // live reorder: the lifted card jumps to the row under the cursor.
         // the part of a card you reach first (its near side ~60%) = "drop onto it" -> makes a group.
-        let n = items.count
+        let n = core.count
         var to = lp.y < 0 ? 0 : index(atListY: lp.y)
         let outside = to < 0 || lp.y < 0
         if to < 0 { to = n - 1 }
-        guard let d = dragItem, let cur = items.firstIndex(where: { $0 === d }) else { return }
-        var merge: Item?
+        let cur = core.index(dragItem)
+        guard cur >= 0 else { return }
+        var merge: Int32 = 0
         if !outside && to != cur {
             let rr = itemRect(to)
             let frac = (lp.y - rr.minY) / rr.height
-            if to > cur ? frac < 0.6 : frac > 0.4 { merge = items[to] }
+            if to > cur ? frac < 0.6 : frac > 0.4 { merge = core.id(to) }
         }
-        if merge !== mergeTarget { mergeTarget = merge; needsDisplay = true }
-        if merge == nil && to != cur {
-            items.remove(at: cur)
-            items.insert(d, at: to)
-            sel = to
+        if merge != mergeTarget { mergeTarget = merge; needsDisplay = true }
+        if merge == 0 && to != cur {
+            pq_move(c, dragItem, Int32(to), 1)
             relayout() // sections follow the new order
             fit()
         }
@@ -711,46 +656,49 @@ final class Widget: NSView, NSTextFieldDelegate {
 
     override func mouseUp(with e: NSEvent) {
         let lp = listPoint(convert(e.locationInWindow, from: nil))
-        if let d = dragItem { // drop
-            dragItem = nil
-            let newGroup = mergeTarget != nil && mergeTarget!.groupId == 0
-            if let t = mergeTarget { joinGroup(d, t) } // dropped onto a card -> group
-            mergeTarget = nil
-            normalizeGroups(d)
+        if dragItem != 0 { // drop
+            let d = dragItem
+            dragItem = 0
+            var created: Int32 = 0
+            if mergeTarget != 0 { pq_join(c, d, mergeTarget, &created) } // dropped onto a card -> group
+            mergeTarget = 0
+            pq_move(c, d, Int32(core.index(d)), 0) // group fix-up + save
             dragIndex = -1
             dropTime = Date().timeIntervalSince1970
             NSCursor.arrow.set()
             changed()
-            if newGroup && d.groupId != 0 { let gid = d.groupId; DispatchQueue.main.async { self.renameGroup(gid) } } // name the new section
+            let g = core.group(d)
+            if created != 0 && g != 0 { DispatchQueue.main.async { self.renameGroup(g) } } // name the new section
             return
         }
         let i = index(atListY: lp.y)
         let click = dragIndex >= 0 && i == dragIndex
         dragIndex = -1
         if !click { return }
-        let it = items[i]
+        let id = core.id(i)
         let mods = e.modifierFlags
-        if mods.contains(.shift) { sel = i; removeSelected() }                       // Shift+click = done
-        else if mods.contains(.command) { }                                          // Cmd+click = just select
-        else if firstOfGroup(i) && lp.y < itemRect(i).minY + hdrH { renameGroup(it.groupId) } // section header
-        else if it.has(lastExternal) { renameItem(i) }                                // the task you're already in -> rename it
-        else { trySwitch(it) }
+        if mods.contains(.shift) { sel = id; removeSelected() }                                      // Shift+click = done
+        else if mods.contains(.command) { }                                                         // Cmd+click = just select
+        else if core.firstOfGroup(i) && lp.y < itemRect(i).minY + hdrH { renameGroup(core.group(id)) } // section header
+        else if core.has(id, lastExternal) { renameItem(i) }                                       // the task you're in -> rename
+        else { trySwitch(id) }
     }
 
     override func mouseMoved(with e: NSEvent) {
         let p = convert(e.locationInWindow, from: nil)
         let hot = [minusR, plusR, goR, stopR].contains { $0.contains(p) } || (!tracker.trusted && p.y >= padT + headerH && p.y < listY)
         (hot ? NSCursor.pointingHand : NSCursor.arrow).set()
-        let i = inList(p) && dragItem == nil ? index(atListY: listPoint(p).y) : -1
+        let i = inList(p) && dragItem == 0 ? index(atListY: listPoint(p).y) : -1
         if i == tipIndex { return }
         tipIndex = i
         if i < 0 { tip.hide(); return }
-        let it = items[i]
+        let id = core.id(i)
         var whereText = ""
-        for w in it.wins { whereText += "\n→ " + appName(w.proc) + " — " + w.title }
-        if it.wins.isEmpty { whereText += "\n→ " + T("(no linked window)", "(연결된 창 없음)") }
+        let wins = core.wins(id)
+        for w in wins { whereText += "\n→ " + appName(w.proc) + " — " + w.title }
+        if wins.isEmpty { whereText += "\n→ " + tr("item.no_window") }
         let sp = panel.convertPoint(toScreen: convert(NSPoint(x: p.x + 12, y: p.y + 16), to: nil))
-        tip.show(it.text + whereText, at: sp, seconds: 5)
+        tip.show(core.text(id) + whereText, at: sp, seconds: 5)
     }
 
     override func mouseExited(with e: NSEvent) { tip.hide(); tipIndex = -1 }
@@ -765,8 +713,11 @@ final class Widget: NSView, NSTextFieldDelegate {
         let p = convert(e.locationInWindow, from: nil)
         let dy = e.scrollingDeltaY
         if dy == 0 { return }
-        if p.y < listY { if e.phase == [] || e.phase == .changed { setOpacity(panel.alphaValue + (dy > 0 ? 0.05 : -0.05)) }; return }
-        if p.y >= barY { if !focusing && breakWins == nil && abs(dy) >= 1 && (e.phase == [] || e.phase == .began) { stepTier(dy > 0 ? 1 : -1) }; return }
+        if p.y < listY { if e.phase == [] || e.phase == .changed { setOpacity(pq_opacity(c) + (dy > 0 ? 0.05 : -0.05)) }; return }
+        if p.y >= barY {
+            if core.state == PQ_IDLE && abs(dy) >= 1 && (e.phase == [] || e.phase == .began) { pq_step_tier(c, dy > 0 ? 1 : -1); needsDisplay = true }
+            return
+        }
         if inList(p) { scrollY -= e.hasPreciseScrollingDeltas ? dy : dy * row; fit() }
     }
 
@@ -779,91 +730,21 @@ final class Widget: NSView, NSTextFieldDelegate {
     // ---------- list operations ----------
 
     func moveSelected(_ delta: Int) {
-        let i = sel
-        guard i >= 0 && i < items.count else { return }
-        let to = max(0, min(items.count - 1, i + delta))
+        let i = core.index(sel)
+        guard i >= 0 else { return }
+        let to = max(0, min(core.count - 1, i + delta))
         if to == i { return }
-        let it = items.remove(at: i)
-        items.insert(it, at: to)
-        sel = to
-        normalizeGroups(it)
+        pq_move(c, sel, Int32(to), 0)
         changed()
     }
 
     func removeSelected() {
-        let i = sel
-        guard i >= 0 && i < items.count else { return }
-        items.remove(at: i)
-        sel = items.isEmpty ? -1 : min(i, items.count - 1)
+        let i = core.index(sel)
+        guard i >= 0 else { return }
+        pq_remove(c, sel)
+        sel = core.count == 0 ? 0 : core.id(min(i, core.count - 1))
         tipIndex = -1; tip.hide()
         changed()
-    }
-
-    func resetSelected() {
-        guard sel >= 0 && sel < items.count else { return }
-        items[sel].created = Date()
-        changed()
-    }
-
-    // ---------- task groups ----------
-
-    static func sameGroup(_ a: Item?, _ b: Item?) -> Bool {
-        guard let a = a, let b = b else { return false }
-        return a.groupId != 0 && a.groupId == b.groupId
-    }
-
-    /// is h one of this item's windows, or of any item in its group?
-    func gHas(_ it: Item, _ h: WinRef?) -> Bool {
-        if it.has(h) { return true }
-        if it.groupId == 0 || h == nil { return false }
-        return items.contains { $0 !== it && $0.groupId == it.groupId && $0.has(h) }
-    }
-
-    /// drop `it` onto `target`: same group, placed right after the target's group
-    func joinGroup(_ it: Item, _ target: Item) {
-        if target.groupId == 0 { target.groupId = (items.map { $0.groupId }.max() ?? 0) + 1 }
-        it.groupId = target.groupId
-        items.removeAll { $0 === it }
-        var at = items.firstIndex { $0 === target }!
-        while at + 1 < items.count && Widget.sameGroup(items[at + 1], target) { at += 1 }
-        items.insert(it, at: at + 1)
-        sel = at + 1
-    }
-
-    func leaveGroup(_ it: Item?) {
-        guard let it = it, it.groupId != 0 else { return }
-        let g = it.groupId
-        it.groupId = 0
-        // move it just below its old group so the group stays in one piece
-        items.removeAll { $0 === it }
-        let last = items.lastIndex { $0.groupId == g } ?? -1
-        items.insert(it, at: last < 0 ? 0 : last + 1)
-        sel = last < 0 ? 0 : last + 1
-        normalizeGroups()
-        changed()
-    }
-
-    /// after a reorder: dropped between two members -> joins them; a member with no neighbour in its group -> leaves
-    func normalizeGroups(_ dropped: Item? = nil) {
-        let n = items.count
-        if let d = dropped, let i = items.firstIndex(where: { $0 === d }) {
-            let a = i > 0 ? items[i - 1] : nil, b = i + 1 < n ? items[i + 1] : nil
-            if Widget.sameGroup(a, b) { d.groupId = a!.groupId }
-        }
-        var lone: [Item] = []
-        for i in 0..<n where items[i].groupId != 0 {
-            let up = i > 0 && Widget.sameGroup(items[i - 1], items[i]), down = i + 1 < n && Widget.sameGroup(items[i + 1], items[i])
-            if !up && !down { lone.append(items[i]) }
-        }
-        for it in lone { it.groupId = 0 }
-    }
-
-    func firstOfGroup(_ i: Int) -> Bool { let it = items[i]; return it.groupId != 0 && (i == 0 || !Widget.sameGroup(items[i - 1], it)) }
-    func lastOfGroup(_ i: Int) -> Bool { let it = items[i]; return it.groupId != 0 && (i + 1 >= items.count || !Widget.sameGroup(items[i + 1], it)) }
-
-    func groupName(_ g: Int) -> String {
-        if let n = groupNames[g], !n.isEmpty { return n }
-        return T("Group", "묶음")
     }
 
     // ---- inline edit (item text / section name) ----
@@ -883,160 +764,71 @@ final class Widget: NSView, NSTextFieldDelegate {
     }
 
     func endEdit(_ commit: Bool) {
-        guard let c = editCommit else { return }
+        guard let cm = editCommit else { return }
         editCommit = nil
-        let t = editBox.stringValue.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "\t", with: " ")
+        let t = editBox.stringValue.trimmingCharacters(in: .whitespaces)
         editBox.isHidden = true
-        if commit && !t.isEmpty { c(t) }
+        if commit && !t.isEmpty { cm(t) }
         needsDisplay = true
         backToWork()
     }
 
     func renameItem(_ i: Int) {
-        let it = items[i]
+        let id = core.id(i)
         let r = cardRect(cardBounds(i, itemRect(i)))
         let x = r.minX + doneW + measure("\(i + 1)   ", F.main) - 3
-        beginEdit(NSRect(x: x, y: r.minY, width: r.maxX - x - 70, height: r.height), it.text, P.greenFill) { [unowned self] t in
-            it.text = t; self.changed()
+        beginEdit(NSRect(x: x, y: r.minY, width: r.maxX - x - 70, height: r.height), core.text(id), P.greenFill) { [unowned self] t in
+            pq_rename(self.c, id, t); self.changed()
         }
     }
 
-    func renameGroup(_ g: Int) {
-        guard let first = items.firstIndex(where: { $0.groupId == g }) else { return }
+    func renameGroup(_ g: Int32) {
+        guard let first = (0..<core.count).first(where: { core.group(core.id($0)) == g }) else { return }
         let sr = sectionRect(first)
         let rc = NSRect(x: sr.minX + 12, y: sr.minY + 2, width: sr.width - 60, height: hdrH - 5)
-        beginEdit(rc, groupName(g), lerp(P.bg, P.groupColor(g), 0.16)) { [unowned self] t in
-            self.groupNames[g] = t; self.save(); self.needsDisplay = true
+        beginEdit(rc, core.groupName(g), lerp(P.bg, P.groupColor(Int(g)), 0.16)) { [unowned self] t in
+            pq_set_group_name(self.c, g, t); self.needsDisplay = true
         }
     }
 
     // ---------- focus timer ----------
 
-    /// items that make up the task being focused on, computed live so items/groups added after Start count too:
-    /// the focus item, any item linked to a window you started in, and every member of their groups
-    func focusTask() -> [Item] {
-        guard focusing else { return [] }
-        var set: [Item] = []
-        var groups = Set<Int>()
-        for it in items {
-            let root = it === focusItem || it.wins.contains { w in focusWins.contains { winMatch(w, $0) } }
-            if root { set.append(it); if it.groupId != 0 { groups.insert(it.groupId) } }
+    /// clicking another item while focusing: warn once (the core sets the note), second click goes
+    func trySwitch(_ id: Int32) {
+        guard id != 0 else { return }
+        if pq_try_switch(c, id, now()) == 0 {
+            Sound.exclamation()
+            startTick()
+            needsDisplay = true
+            return
         }
-        for it in items where it.groupId != 0 && groups.contains(it.groupId) && !set.contains(where: { $0 === it }) { set.append(it) }
-        return set
+        switchTo(id) // leaving starts the 1-minute grace
     }
 
-    func inFocus(_ it: Item?) -> Bool { guard let it = it else { return false }; return focusTask().contains { $0 === it } }
-
-    /// is window h part of the task being focused on?
-    func focusOwns(_ h: WinRef?) -> Bool {
-        guard let h = h else { return false }
-        if focusWins.contains(where: { $0.matches(h) }) { return true }
-        return focusTask().contains { $0.has(h) }
-    }
-
-    /// clicking another item while focusing: warn once, second click (within 6s) goes
-    func trySwitch(_ it: Item?) {
-        guard let it = it else { return }
-        if focusing && !inFocus(it) {
-            let now = Date().timeIntervalSince1970
-            if warnedItem !== it || now - warnTime > 6 {
-                warnedItem = it; warnTime = now
-                note(T("⚠ Focusing! Click again to switch (1 min grace)", "⚠ 집중 중! 한 번 더 누르면 이동 (1분 유예)"), true)
-                Sound.exclamation()
-                return
-            }
-        }
-        switchTo(it) // leaving starts the 1-minute grace
-    }
-
-    /// < > : move between rounds (15/3, 30/5, 60/15); remembered for the task
-    func stepTier(_ d: Int) {
-        selTier = max(0, min(Widget.tierFocus.count - 1, selTier + d))
-        if let b = barItem { setTaskSessions(b, selTier); save() }
-        needsDisplay = true
-    }
-
-    /// a group is one task: its round is the highest of its members
-    func tier(_ it: Item?) -> Int {
-        guard let it = it else { return 0 }
-        var n = it.sessions
-        for o in items where Widget.sameGroup(o, it) { n = max(n, o.sessions) }
-        return min(Widget.tierFocus.count - 1, n)
-    }
-
-    func setTaskSessions(_ it: Item?, _ v: Int) {
-        guard let it = it else { return }
-        for o in items where o === it || Widget.sameGroup(o, it) { o.sessions = v }
-    }
-
-    func itemOf(_ h: WinRef?) -> Item? { items.first { $0.has(h) } }
-
-    /// the window you're in changed: the bar shows that task's next default again
-    func updateBarItem() {
-        if focusing { return }
-        let it: Item?
-        if let l = lastFocusItem, items.contains(where: { $0 === l }), gHas(l, lastExternal) { it = l } else { it = itemOf(lastExternal) }
-        if it !== barItem { barItem = it; selTier = tier(it) }
-        needsDisplay = true
-    }
-
-    func startFocus() {
+    func startFocus(test: Bool) {
         guard let h = lastExternal else { Sound.beep(); return }
-        focusWins = tracker.snapGroup(h) // the window you were in + windows tiled beside it
-        focusItem = items.first { $0.has(h) }
-        if let f = focusItem { // the whole group counts as "the task": moving between its windows keeps the timer
-            for it in items where it === f || Widget.sameGroup(it, f) {
-                for w in it.wins where w.wid != 0 || !w.proc.isEmpty { focusWins.append(WinRef(wid: w.wid, pid: 0, proc: w.proc, title: w.title)) }
-            }
-            lastFocusItem = f
-        }
-        focusing = true
-        focusStart = Date()
-        focusTier = selTier
-        focusEnd = focusStart.addingTimeInterval(Double(Widget.tierFocus[focusTier]) * 60)
-        freezeFrom = focusStart; pausedSec = 0; plannedMin = Widget.tierFocus[focusTier]; extension_ = false
-        breakMin = Widget.tierBreak[focusTier]
-        warnedItem = nil
-        barNoteUntil = .distantPast
+        let wins = tracker.snapGroup(h).map { $0.key } // the window you were in + windows tiled beside it
+        if pq_start(c, wins, Int32(wins.count), test ? 1 : 0, now()) == 0 { Sound.beep(); return }
         startTick()
         needsDisplay = true
         backToWork()
     }
 
     func barMouseDown(_ e: NSEvent, _ p: NSPoint) {
-        if breakWins != nil && breakHidden { showBreak(); return } // bring the break screen back
-        if breakWins != nil { return }
-        if focusing { if stopR.contains(p) { stopFocus(T("Focus stopped", "집중 중지"), false) }; return }
-        if minusR.contains(p) { stepTier(-1) }
-        else if plusR.contains(p) { stepTier(1) }
-        else if goR.contains(p) {
-            startFocus()
-            // Option+click (or Ctrl+click on Windows) = 10-second test run
-            if focusing && e.modifierFlags.contains(.option) { startTestRun() }
+        let state = core.state
+        if state == PQ_BREAK {
+            if pq_break_hidden(c) != 0 { pq_break_show(c); showBreak() } // bring the break screen back
+            return
         }
-    }
-
-    func startTestRun() {
-        focusEnd = focusStart.addingTimeInterval(10); plannedMin = 0
+        if state == PQ_FOCUS || state == PQ_AWAY {
+            if stopR.contains(p) { pq_stop(c, now()); awayToast?.hide(); needsDisplay = true; startTick() }
+            return
+        }
+        if minusR.contains(p) { pq_step_tier(c, -1) }
+        else if plusR.contains(p) { pq_step_tier(c, 1) }
+        // Option+click (Ctrl+click on Windows) = 10-second test run
+        else if goR.contains(p) { startFocus(test: e.modifierFlags.contains(.option) || e.modifierFlags.contains(.control)) }
         needsDisplay = true
-    }
-
-    // ---------- focus log (CSV sheet) + stats ----------
-
-    /// one row per focus segment: when, how long (paused time excluded), which task/section, how it ended
-    func logSession(_ outcome: String) {
-        let end = away ? awayStart : Date()
-        let min = (end.timeIntervalSince(freezeFrom) - pausedSec) / 60
-        if min < 0.5 { return } // ignore accidental starts
-        var it = focusItem
-        if it == nil { it = focusTask().first }
-        let task = it?.text ?? T("(no task)", "(할 일 없음)")
-        let grp = it != nil && it!.groupId != 0 ? groupName(it!.groupId) : ""
-        let line = [Store.stamp.string(from: freezeFrom), Store.stamp.string(from: end),
-                    String(format: "%.1f", min).replacingOccurrences(of: ",", with: "."), Store.csv(task), Store.csv(grp),
-                    "\(focusTier + 1)", "\(plannedMin)", extension_ ? "extension" : "focus", outcome].joined(separator: ",")
-        store.appendLog(line)
     }
 
     func openStats() {
@@ -1045,95 +837,14 @@ final class Widget: NSView, NSTextFieldDelegate {
         stats?.show()
     }
 
-    func openLogSheet() {
-        store.ensureLog()
-        NSWorkspace.shared.open(store.log)
-    }
+    func openLogSheet() { NSWorkspace.shared.open(URL(fileURLWithPath: str(pq_log_path(c)))) }
 
-    // ---- left the task while focusing: pause, show a centered 1-minute warning ----
+    // ---------- clock: 250 ms timer, only while the core needs it ----------
 
-    func startAway(_ from: WinRef?) {
-        away = true
-        awayStart = Date()
-        awayHome = from != nil && focusOwns(from) ? from : nil
-        if awayHome == nil { awayHome = focusWins.first }
-        if awayToast == nil {
-            let t = Toast(size: NSSize(width: 340, height: 168))
-            t.view.paint = { [unowned self] v in self.paintAway(v) }
-            t.view.down = { [unowned self] _, p in
-                if self.backR.contains(p) { self.goBack() }
-                else if self.quitR.contains(p) { self.stopFocus(T("Focus stopped", "집중 중지"), false) }
-            }
-            t.view.moved = { [unowned self] p in (self.backR.contains(p) || self.quitR.contains(p) ? NSCursor.pointingHand : NSCursor.arrow).set() }
-            awayToast = t
-        }
-        awayToast!.showCentered()
-        Sound.exclamation()
-        startTick()
-        needsDisplay = true
-    }
-
-    func goBack() {
-        guard let h = awayHome else { return }
-        tracker.raise(Win(wid: h.wid, proc: h.proc, title: h.title), activate: true)
-    }
-
-    func endAway(_ resume: Bool) {
-        if !away { return }
-        away = false
-        if resume {
-            let d = Date().timeIntervalSince(awayStart)
-            focusEnd = focusEnd.addingTimeInterval(d); pausedSec += d // paused time doesn't count
-        }
-        awayToast?.hide()
-        if resume { note(T("Welcome back · focus continues", "돌아왔어요 · 집중 이어서"), false) }
-        needsDisplay = true
-    }
-
-    func paintAway(_ v: PaintView) {
-        let w = v.bounds.width, h = v.bounds.height
-        fill(NSBezierPath(rect: v.bounds), P.bg)
-        stroke(round(v.bounds.insetBy(dx: 1.2, dy: 1.2), 11), P.redFill, 2.4)
-        drawText(T("⏸  You're focusing", "⏸  집중 중이에요"), F.mid, NSRect(x: 0, y: 14, width: w, height: 28), P.redDeep, .center)
-        drawText(clockText(awaySec - Date().timeIntervalSince(awayStart)), F.big26, NSRect(x: 0, y: 42, width: w, height: 50), P.ink, .center)
-        drawText(T("Come back within 1 min to keep the timer", "1분 안에 돌아가면 타이머가 이어져요"), F.main, NSRect(x: 0, y: 92, width: w, height: 22), P.muted, .center)
-        let bw: CGFloat = 120, bh: CGFloat = 26, y = h - bh - 14, gap: CGFloat = 10
-        backR = NSRect(x: w / 2 - bw - gap / 2, y: y, width: bw, height: bh)
-        quitR = NSRect(x: w / 2 + gap / 2, y: y, width: bw, height: bh)
-        pill(backR, P.greenFill, P.greenDeep, T("↩ Go back", "↩ 돌아가기"), F.age)
-        pill(quitR, P.pill, P.grayDeep, T("■ Stop", "■ 그만하기"), F.age)
-    }
-
-    /// stop (reset) the focus timer; the time spent focusing doesn't count toward the other items' age
-    func stopFocus(_ noteText: String?, _ warn: Bool, _ outcome: String = "stopped") {
-        if !focusing { return }
-        logSession(outcome) // before clearing away state: time away isn't focus time
-        if away { endAway(false) }
-        let el = Date().timeIntervalSince(freezeFrom)
-        let task = focusTask()
-        for it in items where !task.contains(where: { $0 === it }) {
-            it.created = it.created < freezeFrom ? it.created.addingTimeInterval(el) : Date()
-        }
-        focusing = false
-        focusItem = nil; warnedItem = nil
-        focusWins = []
-        if let n = noteText { note(n, warn) }
-        save()
-        needsDisplay = true
-    }
-
-    func note(_ text: String, _ warn: Bool) {
-        barNote = text; barWarn = warn
-        barNoteUntil = Date().addingTimeInterval(4)
-        startTick()
-        needsDisplay = true
-    }
-
-    // 1 s timer: runs only while focusing / on break / showing a note
     func startTick() {
         if tick != nil { return }
-        let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.onTick() }
-        t.tolerance = 0.1
+        let t = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in self?.onTick() }
+        t.tolerance = 0.05
         RunLoop.main.add(t, forMode: .common)
         tick = t
     }
@@ -1141,38 +852,73 @@ final class Widget: NSView, NSTextFieldDelegate {
     func stopTick() { tick?.invalidate(); tick = nil }
 
     func onTick() {
-        let now = Date()
-        if away {
-            if now.timeIntervalSince(awayStart) >= awaySec {
-                stopFocus(T("Didn't come back within 1 min · focus reset", "1분 안에 안 돌아와서 집중 초기화"), true, "left")
-            } else { awayToast?.view.needsDisplay = true }
-        }
-        if focusing && !away && now >= focusEnd {
-            for ft in focusTask() { ft.sessions = max(ft.sessions, focusTier + 1) } // next round for the whole task
-            lastFocusItem = focusItem
-            doneWins = focusWins; doneItem = focusItem; doneTier = focusTier
-            doneStart = focusStart; doneEnd = now
-            stopFocus(nil, false, "done")
-            barItem = nil; updateBarItem()
-            startBreak()
-        }
-        if breakWins != nil && breakHidden {
-            if now >= breakEnd { endBreak() }
-            else if breakEnd.timeIntervalSince(now) <= soonSec && !soonShown { showSoon() }
-            else if let s = soonToast, s.visible { s.view.needsDisplay = true }
-        } else if let bw = breakWins {
-            if now >= breakEnd { endBreak() }
-            else { for w in bw { w.orderFrontRegardless(); w.contentView?.needsDisplay = true } } // stay on top
-        }
+        handle(pq_tick(c, now()))
+        if let a = awayToast, a.visible { a.view.needsDisplay = true }
+        if let s = soonToast, s.visible { s.view.needsDisplay = true }
+        if let bw = breakWins, pq_break_hidden(c) == 0 { for w in bw { w.orderFrontRegardless(); w.contentView?.needsDisplay = true } } // stay on top
         needsDisplay = true
-        if !focusing && breakWins == nil && now >= barNoteUntil { stopTick() }
+        if pq_needs_tick(c, now()) == 0 { stopTick() }
+    }
+
+    /// react to PQ_EV_* flags from the core
+    func handle(_ ev: Int32) {
+        if ev & PQ_EV_AWAY_START != 0 { showAway() }
+        if ev & (PQ_EV_AWAY_END | PQ_EV_AWAY_TIMEOUT) != 0 { awayToast?.hide() }
+        if ev & PQ_EV_FOCUS_DONE != 0 { awayToast?.hide(); startBreak() }
+        if ev & PQ_EV_BREAK_SOON != 0 { showSoon() }
+        if ev & PQ_EV_BREAK_END != 0 { closeBreak() }
+        if pq_needs_tick(c, now()) != 0 { startTick() }
+    }
+
+    // ---- left the task while focusing: the centered 1-minute card ----
+
+    func showAway() {
+        if awayToast == nil {
+            let t = Toast(size: NSSize(width: 340, height: 168))
+            t.view.paint = { [unowned self] v in self.paintAway(v) }
+            t.view.down = { [unowned self] _, p in
+                if self.backR.contains(p) { self.goBack() }
+                else if self.quitR.contains(p) { pq_stop(self.c, now()); self.awayToast?.hide(); self.needsDisplay = true; self.startTick() }
+            }
+            t.view.moved = { [unowned self] p in (self.backR.contains(p) || self.quitR.contains(p) ? NSCursor.pointingHand : NSCursor.arrow).set() }
+            awayToast = t
+        }
+        awayToast!.showCentered()
+        Sound.exclamation()
+    }
+
+    func goBack() {
+        let home = pq_away_home(c)
+        if home == 0 { return }
+        let proc = core.ids.lazy.flatMap { core.wins($0) }.first { $0.key == home }?.proc ?? procOf(home)
+        tracker.raise(home, proc, activate: true)
+    }
+
+    /// the app of a window id the queue doesn't know (e.g. a window you started focusing in)
+    func procOf(_ key: pq_win) -> String {
+        if key > 0, let pid = Tracker.cgWindows(onScreen: false).first(where: { pq_win($0.wid) == key })?.pid,
+           let app = NSRunningApplication(processIdentifier: pid) { return Tracker.procOf(app) }
+        return NSWorkspace.shared.runningApplications.map(Tracker.procOf).first { Core.appKey($0) == key } ?? ""
+    }
+
+    func paintAway(_ v: PaintView) {
+        let w = v.bounds.width, h = v.bounds.height
+        fill(NSBezierPath(rect: v.bounds), P.bg)
+        stroke(round(v.bounds.insetBy(dx: 1.2, dy: 1.2), 11), P.redFill, 2.4)
+        drawText(tr("away.title"), F.mid, NSRect(x: 0, y: 14, width: w, height: 28), P.redDeep, .center)
+        drawText(clockText(pq_away_left(c, now())), F.big26, NSRect(x: 0, y: 42, width: w, height: 50), P.ink, .center)
+        drawText(tr("away.body"), F.main, NSRect(x: 0, y: 92, width: w, height: 22), P.muted, .center)
+        let bw: CGFloat = 120, bh: CGFloat = 26, y = h - bh - 14, gap: CGFloat = 10
+        backR = NSRect(x: w / 2 - bw - gap / 2, y: y, width: bw, height: bh)
+        quitR = NSRect(x: w / 2 + gap / 2, y: y, width: bw, height: bh)
+        pill(backR, P.greenFill, P.greenDeep, tr("away.back"), F.age)
+        pill(quitR, P.pill, P.grayDeep, tr("away.stop"), F.age)
     }
 
     // ---------- break overlay ----------
 
     func startBreak() {
-        breakStart = Date()
-        breakEnd = breakStart.addingTimeInterval(Double(breakMin) * 60)
+        closeBreak()
         var wins: [FloatPanel] = []
         for (k, sc) in NSScreen.screens.enumerated() {
             let w = makePanel(sc.frame, level: .screenSaver, shadow: false)
@@ -1183,8 +929,10 @@ final class Widget: NSView, NSTextFieldDelegate {
             if k == 0 {
                 v.paint = { [unowned self] v in self.paintBreak(v) }
                 v.down = { [unowned self] e, p in
-                    if e.clickCount >= 2 && self.skipR.contains(p) { self.endBreak(); return } // emergency exit
-                    if self.extR.contains(p) { self.extendFocus() } else if self.bgR.contains(p) { self.hideBreak() }
+                    if e.clickCount >= 2 && self.skipR.contains(p) { pq_break_skip(self.c, now()); self.closeBreak(); return } // emergency exit
+                    if self.extR.contains(p) { pq_extend(self.c, now()); self.closeBreak(); self.startTick() }
+                    else if self.bgR.contains(p) { self.hideBreak() }
+                    self.needsDisplay = true
                 }
                 v.moved = { [unowned self] p in
                     (self.skipR.contains(p) || self.extR.contains(p) || self.bgR.contains(p) ? NSCursor.pointingHand : NSCursor.arrow).set()
@@ -1203,57 +951,30 @@ final class Widget: NSView, NSTextFieldDelegate {
         needsDisplay = true
     }
 
-    func endBreak(quiet: Bool = false) {
+    func closeBreak() {
+        soonToast?.hide()
         guard let ws = breakWins else { return }
         breakWins = nil
-        breakHidden = false; soonShown = false
-        soonToast?.hide()
         for w in ws { w.orderOut(nil); w.close() }
-        if !quiet {
-            Sound.asterisk()
-            note(T("Break over! Ready to start again?", "휴식 끝! 다시 시작해볼까요"), false)
-        }
+        if core.state != PQ_BREAK && pq_note(c, now()) != nil && !core.focusing { Sound.asterisk() } // natural end: "break over"
         needsDisplay = true
     }
 
-    /// from the break screen: same task, same round, 5 more minutes; then the break comes back
-    func extendFocus() {
-        guard breakWins != nil, let dw = doneWins else { return }
-        endBreak(quiet: true)
-        focusWins = dw
-        focusItem = doneItem != nil && items.contains(where: { $0 === doneItem }) ? doneItem : nil
-        focusTier = doneTier
-        breakMin = Widget.tierBreak[focusTier]
-        focusing = true
-        let now = Date()
-        focusStart = now.addingTimeInterval(-doneEnd.timeIntervalSince(doneStart)) // keep the time already focused on the bar
-        focusEnd = now.addingTimeInterval(Double(extendMin) * 60)
-        freezeFrom = now; pausedSec = 0; plannedMin = extendMin; extension_ = true
-        warnedItem = nil
-        startTick()
-        note(T("+\(extendMin) min · break comes back after", "+\(extendMin)분 연장 · 끝나면 다시 휴식"), false)
-    }
-
-    /// break keeps counting with the cover hidden; a small card pops up 10 s before it ends
+    /// "Rest in background": the break keeps counting with the cover hidden
     func hideBreak() {
-        guard let ws = breakWins else { return }
-        breakHidden = true
-        for w in ws { w.orderOut(nil) }
-        if breakEnd.timeIntervalSinceNow <= soonSec { showSoon() }
-        note(T("Resting in the background · alert 10 s before the end", "백그라운드로 휴식 중 · 끝나기 10초 전에 알려줄게요"), false)
+        pq_break_hide(c, now())
+        breakWins?.forEach { $0.orderOut(nil) }
+        handle(pq_tick(c, now())) // the "almost over" card may be due right away
         startTick()
     }
 
     func showBreak() {
-        guard let ws = breakWins, breakHidden else { return }
-        breakHidden = false
         soonToast?.hide()
-        for w in ws { w.orderFrontRegardless() }
+        breakWins?.forEach { $0.orderFrontRegardless() }
         needsDisplay = true
     }
 
     func showSoon() {
-        soonShown = true
         if soonToast == nil {
             let t = Toast(size: NSSize(width: 300, height: 128))
             t.view.paint = { [unowned self] v in self.paintSoon(v) }
@@ -1268,39 +989,38 @@ final class Widget: NSView, NSTextFieldDelegate {
         let w = v.bounds.width
         fill(NSBezierPath(rect: v.bounds), P.bg)
         stroke(round(v.bounds.insetBy(dx: 1.2, dy: 1.2), 11), P.lavMid, 2.4)
-        drawText(T("Break is almost over", "휴식이 곧 끝나요"), F.mid, NSRect(x: 0, y: 12, width: w, height: 28), P.lavDeep, .center)
-        drawText(clockText(breakEnd.timeIntervalSinceNow), F.big26, NSRect(x: 0, y: 40, width: w, height: 50), P.ink, .center)
-        drawText(T("Get ready to come back · click to close", "자리로 돌아올 준비 · 클릭하면 닫혀요"), F.age, NSRect(x: 0, y: 94, width: w, height: 22), P.muted, .center)
+        drawText(tr("soon.title"), F.mid, NSRect(x: 0, y: 12, width: w, height: 28), P.lavDeep, .center)
+        drawText(clockText(pq_break_left(c, now())), F.big26, NSRect(x: 0, y: 40, width: w, height: 50), P.ink, .center)
+        drawText(tr("soon.body"), F.age, NSRect(x: 0, y: 94, width: w, height: 22), P.muted, .center)
     }
 
     func paintBreak(_ v: PaintView) {
+        let tnow = now()
         fill(NSBezierPath(rect: v.bounds), P.breakBg)
         let cw: CGFloat = 420, ch: CGFloat = 292
-        let c = NSRect(x: (v.bounds.width - cw) / 2, y: (v.bounds.height - ch) / 2, width: cw, height: ch)
-        fill(round(c, 24), P.bg)
-        drawText(T("Break time", "휴식 시간"), F.mid, NSRect(x: c.minX, y: c.minY + 26, width: c.width, height: 30), P.lavDeep, .center)
-        let left = breakEnd.timeIntervalSinceNow
-        drawText(clockText(left), F.big, NSRect(x: c.minX, y: c.minY + 62, width: c.width, height: 80), P.ink, .center)
-        drawText(T("Look away from the screen, get up, drink water, stretch", "화면에서 눈을 떼고, 일어나서 물 한 잔 + 스트레칭"), F.main,
-                 NSRect(x: c.minX, y: c.minY + 150, width: c.width, height: 24), P.muted, .center)
+        let cr = NSRect(x: (v.bounds.width - cw) / 2, y: (v.bounds.height - ch) / 2, width: cw, height: ch)
+        fill(round(cr, 24), P.bg)
+        drawText(tr("break.title"), F.mid, NSRect(x: cr.minX, y: cr.minY + 26, width: cr.width, height: 30), P.lavDeep, .center)
+        drawText(clockText(pq_break_left(c, tnow)), F.big, NSRect(x: cr.minX, y: cr.minY + 62, width: cr.width, height: 80), P.ink, .center)
+        drawText(tr("break.body"), F.main, NSRect(x: cr.minX, y: cr.minY + 150, width: cr.width, height: 24), P.muted, .center)
         // "+5 min focus" + "rest in the background" buttons
-        let ebw: CGFloat = 150, ebh: CGFloat = 30, egap: CGFloat = 12, ey = c.minY + 188
-        if doneWins == nil {
+        let ebw: CGFloat = 150, ebh: CGFloat = 30, egap: CGFloat = 12, ey = cr.minY + 188
+        if pq_can_extend(c) == 0 {
             extR = .zero
-            bgR = NSRect(x: c.minX + (c.width - ebw) / 2, y: ey, width: ebw, height: ebh)
+            bgR = NSRect(x: cr.minX + (cr.width - ebw) / 2, y: ey, width: ebw, height: ebh)
         } else {
-            extR = NSRect(x: c.midX - ebw - egap / 2, y: ey, width: ebw, height: ebh)
-            bgR = NSRect(x: c.midX + egap / 2, y: ey, width: ebw, height: ebh)
-            pill(extR, P.greenFill, P.greenDeep, T("+\(extendMin) min focus", "+\(extendMin)분 더 집중"), F.main)
+            extR = NSRect(x: cr.midX - ebw - egap / 2, y: ey, width: ebw, height: ebh)
+            bgR = NSRect(x: cr.midX + egap / 2, y: ey, width: ebw, height: ebh)
+            pill(extR, P.greenFill, P.greenDeep, core.fmt("break.extend", "5"), F.main)
         }
-        pill(bgR, P.pill, P.grayDeep, T("Rest in background", "백그라운드로 쉬기"), F.main)
+        pill(bgR, P.pill, P.grayDeep, tr("break.background"), F.main)
         // progress
-        let pr = NSRect(x: c.minX + 50, y: c.maxY - 40, width: c.width - 100, height: 8)
-        let done = CGFloat(max(0, min(1, 1 - left / (Double(breakMin) * 60))))
+        let pr = NSRect(x: cr.minX + 50, y: cr.maxY - 40, width: cr.width - 100, height: 8)
+        let done = CGFloat(pq_break_progress(c, tnow))
         fill(round(pr, pr.height / 2), P.lav)
         if done > 0.01 { fill(round(NSRect(x: pr.minX, y: pr.minY, width: max(pr.height, pr.width * done), height: pr.height), pr.height / 2), P.lavMid) }
         // small emergency exit at the bottom of the screen
-        let skip = T("Urgent? Double-click here to skip the break", "급한 일이면 여기를 더블클릭해서 건너뛰기")
+        let skip = tr("break.skip")
         let sw = measure(skip, F.age)
         skipR = NSRect(x: (v.bounds.width - sw) / 2 - 10, y: v.bounds.height - 70, width: sw + 20, height: 28)
         drawText(skip, F.age, skipR, rgb(120, 112, 140), .center)
@@ -1309,8 +1029,7 @@ final class Widget: NSView, NSTextFieldDelegate {
     // ---------- shutdown ----------
 
     func shutdown() {
-        stopFocus(nil, false, "quit") // log a running session when the widget closes
         endEdit(true)
-        save()
+        core.close() // logs a running session ("quit") and saves
     }
 }

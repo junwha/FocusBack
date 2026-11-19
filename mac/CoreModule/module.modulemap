@@ -1,0 +1,4 @@
+module PQCore {
+    header "../../core/pq_core.h"
+    export *
+}

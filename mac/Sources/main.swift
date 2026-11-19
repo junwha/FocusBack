@@ -4,15 +4,15 @@ import Carbon
 
 // ---- single instance: a second launch asks the running widget to come back (or to open stats) ----
 let args = CommandLine.arguments
-let lockStore = Store()
-let lockPath = lockStore.dir.appendingPathComponent(".lock").path
+try? FileManager.default.createDirectory(at: DataDir.url, withIntermediateDirectories: true)
+let lockPath = DataDir.url.appendingPathComponent(".lock").path
 let lockFd = open(lockPath, O_CREAT | O_RDWR, 0o644)
 let showName = Notification.Name(stableName("show")), statsName = Notification.Name(stableName("stats")), debugName = Notification.Name(stableName("debug"))
 
 /// String.hashValue is randomized per process, so build the notification name from the path itself
 func stableName(_ kind: String) -> String {
     var h: UInt64 = 1469598103934665603
-    for b in lockStore.dir.path.utf8 { h = (h ^ UInt64(b)) &* 1099511628211 }
+    for b in DataDir.url.path.utf8 { h = (h ^ UInt64(b)) &* 1099511628211 }
     return "FocusQueue.\(String(h, radix: 36)).\(kind)"
 }
 
@@ -46,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var sigterm: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        core = Core() // loads the data folder (backs up items.tsv first)
         widget = Widget()
         registerHotKey { [unowned self] in self.widget.hotkey() }
         let dc = DistributedNotificationCenter.default()

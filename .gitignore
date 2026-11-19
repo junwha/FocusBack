@@ -11,3 +11,7 @@ mac/build/
 focus_log.csv
 opacity.txt
 lang.txt
+
+# core downloaded by build.bat
+pq_core.dll
+pq_core.ver

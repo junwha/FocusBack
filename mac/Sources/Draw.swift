@@ -1,17 +1,6 @@
 // Palette, fonts, drawing helpers and the small borderless panels used everywhere.
 import AppKit
 
-// UI language: English or Korean. Default follows the system language; switch from the menu.
-enum Lang {
-    static var ko = false
-    static func load(_ url: URL) {
-        let v = (try? String(contentsOf: url, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let sys = (Locale.preferredLanguages.first ?? "").hasPrefix("ko")
-        ko = v == "ko" || (v != "en" && sys)
-    }
-}
-func T(_ en: String, _ ko: String) -> String { Lang.ko ? ko : en }
-
 func rgb(_ r: Int, _ g: Int, _ b: Int, _ a: Int = 255) -> NSColor {
     NSColor(srgbRed: CGFloat(r) / 255, green: CGFloat(g) / 255, blue: CGFloat(b) / 255, alpha: CGFloat(a) / 255)
 }
@@ -104,16 +93,6 @@ func stroke(_ p: NSBezierPath, _ c: NSColor, _ w: CGFloat, dash: Bool = false) {
 func pill(_ r: NSRect, _ fillC: NSColor, _ fg: NSColor, _ text: String, _ font: NSFont) {
     fill(round(r, r.height / 2), fillC)
     drawText(text, font, r, fg, .center)
-}
-
-func clockText(_ secs: Double) -> String {
-    let t = Int(ceil(max(0, secs)))
-    return "\(t / 60):" + String(format: "%02d", t % 60)
-}
-
-func fmtMin(_ m: Double) -> String {
-    let v = Int(m.rounded())
-    return v < 60 ? "\(v)" + T(" min", "분") : "\(v / 60)" + T("h", "시간") + (v % 60 > 0 ? " \(v % 60)" + T("m", "분") : "")
 }
 
 enum Sound {
