@@ -81,6 +81,13 @@ mac/build.sh          # mac/build/FocusQueue.app 빌드 (코어를 함께 컴파
 mac/build.sh --run    # 실행 중인 위젯도 다시 시작 (할 일 목록은 먼저 백업)
 ```
 
+**코어 테스트** – 순수 C라 어떤 컴파일러든 됩니다:
+```bash
+cc -std=c11 -Wall -Wextra -o test_core core/tests/test_core.c core/pq_core.c core/pq_strings.c -lm
+./test_core "$(mktemp -d)"
+```
+Windows에서는 `cl /utf-8 core\tests\test_core.c core\pq_core.c core\pq_strings.c`로 빌드하고 빈 폴더를 주고 `test_core.exe`를 실행합니다. CI가 두 플랫폼에서 모두 돌립니다.
+
 macOS에서는 **▶ 시작**을 `Option+클릭`하면 10초 테스트 집중(Windows는 `Ctrl+클릭`), `Ctrl+클릭`은 우클릭 메뉴, `Cmd+클릭`은 선택만, `Delete`는 선택한 할 일 완료입니다. 빌드는 임시 서명(ad-hoc)이라 다시 빌드한 뒤에는 손쉬운 사용 권한을 다시 허용해야 할 수 있습니다.
 
 ## 데이터
@@ -107,4 +114,4 @@ Windows에서는 `PQ.exe --data <폴더>`로 실행하면 다른 폴더에 데�
 | `kind` | `focus`(기본) 또는 `extension`(+5분 연장) |
 | `outcome` | `done`(완료), `stopped`(중지), `left`(1분 안에 안 돌아옴), `quit`(위젯 종료) |
 
-30초보다 짧은 집중은 기록하지 않습니다. 실행할 때마다 `items.tsv`를 먼저 `items.bak.tsv`로 복사해 둡니다. macOS의 `items.tsv`에서 창 열에는 `CGWindowID`(`0` = 앱 전체)가, 프로세스 열에는 앱의 번들 ID가 들어갑니다.
+30초보다 짧은 집중은 기록하지 않습니다. 실행할 때마다 `items.tsv`를 먼저 `items.bak.tsv`로 복사해 둡니다. macOS의 `items.tsv`에서 창 열에는 `CGWindowID`가(창 단위 추적을 못 할 때, 즉 손쉬운 사용 권한이 없을 때는 앱마다 정해진 음수 ID가), 프로세스 열에는 앱의 번들 ID가 들어갑니다.

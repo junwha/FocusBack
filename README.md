@@ -81,6 +81,13 @@ mac/build.sh          # builds mac/build/FocusQueue.app (core compiled and linke
 mac/build.sh --run    # also restarts a running widget (your queue is backed up first)
 ```
 
+**Core tests** – plain C, any compiler:
+```bash
+cc -std=c11 -Wall -Wextra -o test_core core/tests/test_core.c core/pq_core.c core/pq_strings.c -lm
+./test_core "$(mktemp -d)"
+```
+On Windows: `cl /utf-8 core\tests\test_core.c core\pq_core.c core\pq_strings.c` and run `test_core.exe` with an empty folder. CI runs them on both platforms.
+
 On macOS, `Option+click` on **▶ Start** runs a 10-second test session (`Ctrl+click` on Windows), `Ctrl+click` opens the right-click menu, `Cmd+click` only selects, and `Delete` marks the selected task done. The build is ad-hoc signed, so you may need to allow Accessibility again after rebuilding.
 
 ## Data
@@ -107,4 +114,4 @@ On Windows, `PQ.exe --data <folder>` runs a separate instance that keeps its dat
 | `kind` | `focus` or `extension` (+5 min) |
 | `outcome` | `done`, `stopped`, `left` (didn't come back within 1 min), `quit` (widget closed) |
 
-Segments shorter than 30 seconds are not logged. Each launch copies `items.tsv` to `items.bak.tsv` before anything is written. On macOS the window column of `items.tsv` holds a `CGWindowID` (`0` = the whole app) and the process column holds the app's bundle identifier.
+Segments shorter than 30 seconds are not logged. Each launch copies `items.tsv` to `items.bak.tsv` before anything is written. On macOS the window column of `items.tsv` holds a `CGWindowID`, or a negative per-app id when windows are tracked per app (no Accessibility permission), and the process column holds the app's bundle identifier.
