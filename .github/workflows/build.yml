@@ -1,0 +1,83 @@
+name: build
+
+# - every push: builds the core DLL + the Windows app, and the macOS app
+# - push to main: publishes the core DLL to the rolling "core" release so `build.bat` can download it
+#   (asset name = pq_core-<git tree hash of core/>-win-x64.dll, so a checkout always gets its own core)
+# - tag v*: creates a GitHub release with the ready-to-run Windows and macOS zips
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Build pq_core.dll
+        shell: cmd
+        run: cl /nologo /O2 /W3 /utf-8 /LD core\pq_core.c core\pq_strings.c /Fe:pq_core.dll
+      - name: Build PQ.exe
+        shell: cmd
+        run: build.bat --local
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item PQ.exe, pq_core.dll dist/
+          Compress-Archive dist/* FocusQueue-windows-x64.zip
+          $hash = git rev-parse --short=12 HEAD:core
+          Copy-Item pq_core.dll "pq_core-$hash-win-x64.dll"
+          "CORE_ASSET=pq_core-$hash-win-x64.dll" >> $env:GITHUB_ENV
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            FocusQueue-windows-x64.zip
+            pq_core-*-win-x64.dll
+      - name: Publish core DLL for build.bat
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view core *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create core --prerelease --title "Core library (for build.bat)" --notes "Prebuilt pq_core.dll files used by build.bat. Each file is named after the git tree hash of core/. For the app itself, use the latest vX.Y.Z release."
+          }
+          gh release upload core $env:CORE_ASSET --clobber
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build FocusQueue.app
+        run: mac/build.sh
+      - name: Package
+        run: ditto -c -k --keepParent mac/build/FocusQueue.app FocusQueue-macos.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: FocusQueue-macos.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" FocusQueue-windows-x64.zip FocusQueue-macos.zip --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
