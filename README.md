@@ -11,16 +11,19 @@ It sits in the top-right corner of the screen, shows what you're working on and 
 
 ## Install
 
-Download the latest release from **[Releases](https://github.com/junwha/ADHDTimer/releases/latest)**.
+| | Download |
+|---|---|
+| **Windows 10/11** (x64) | **[FocusQueue-Setup-x64.exe](https://github.com/junwha/ADHDTimer/releases/latest/download/FocusQueue-Setup-x64.exe)** |
+| **macOS 12+** (Apple Silicon & Intel) | **[FocusQueue-macOS.dmg](https://github.com/junwha/ADHDTimer/releases/latest/download/FocusQueue-macOS.dmg)** |
 
-**Windows 10/11**
-1. Download `FocusQueue-windows-x64.zip` and unzip it anywhere (keep `PQ.exe` and `pq_core.dll` together).
-2. Run `PQ.exe`. If SmartScreen warns about an unknown app: **More info → Run anyway**.
-3. Optional: to start it with Windows, put a shortcut to `PQ.exe` in `shell:startup` (Win+R → `shell:startup`).
+**Windows**
+1. Run `FocusQueue-Setup-x64.exe`. If SmartScreen warns about an unknown app: **More info → Run anyway**.
+2. Click through the installer (no admin rights needed). Tick *Start FocusQueue when Windows starts* if you want it at every login.
+3. FocusQueue starts in the top-right corner. Uninstall it from **Settings → Apps** like any other app.
 
-**macOS 12+**
-1. Download `FocusQueue-macos.zip`, unzip it, and move `FocusQueue.app` to `Applications`.
-2. The first time, **right-click → Open** (the app isn't notarized).
+**macOS**
+1. Open `FocusQueue-macOS.dmg` and drag **FocusQueue** onto **Applications**.
+2. The first time, **right-click FocusQueue in Applications → Open** (the app isn't notarized).
 3. Allow FocusQueue in **System Settings → Privacy & Security → Accessibility** so tasks can follow individual windows (without it, they follow whole apps).
 
 Your data never leaves your computer (see [Data](#data)).

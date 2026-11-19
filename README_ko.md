@@ -11,16 +11,19 @@
 
 ## 설치
 
-**[Releases](https://github.com/junwha/ADHDTimer/releases/latest)** 에서 최신 버전을 받습니다.
+| | 다운로드 |
+|---|---|
+| **Windows 10/11** (x64) | **[FocusQueue-Setup-x64.exe](https://github.com/junwha/ADHDTimer/releases/latest/download/FocusQueue-Setup-x64.exe)** |
+| **macOS 12 이상** (Apple Silicon·Intel) | **[FocusQueue-macOS.dmg](https://github.com/junwha/ADHDTimer/releases/latest/download/FocusQueue-macOS.dmg)** |
 
-**Windows 10/11**
-1. `FocusQueue-windows-x64.zip`을 받아 아무 곳에나 압축을 풉니다 (`PQ.exe`와 `pq_core.dll`은 같은 폴더에 둡니다).
-2. `PQ.exe`를 실행합니다. SmartScreen 경고가 뜨면 **추가 정보 → 실행**을 누릅니다.
-3. 선택: Windows를 켤 때 같이 실행하려면 `PQ.exe` 바로가기를 `shell:startup` 폴더에 넣습니다 (Win+R → `shell:startup`).
+**Windows**
+1. `FocusQueue-Setup-x64.exe`를 실행합니다. SmartScreen 경고가 뜨면 **추가 정보 → 실행**을 누릅니다.
+2. 설치 화면을 따라 진행합니다 (관리자 권한 필요 없음). 로그인할 때마다 켜지게 하려면 *Start FocusQueue when Windows starts*를 체크합니다.
+3. 설치가 끝나면 화면 우측 상단에 FocusQueue가 뜹니다. 삭제는 **설정 → 앱**에서 다른 앱처럼 하면 됩니다.
 
-**macOS 12 이상**
-1. `FocusQueue-macos.zip`을 받아 압축을 풀고 `FocusQueue.app`을 `응용 프로그램` 폴더로 옮깁니다.
-2. 처음 한 번은 **우클릭 → 열기**로 엽니다 (공증되지 않은 앱이라서).
+**macOS**
+1. `FocusQueue-macOS.dmg`를 열고 **FocusQueue**를 **Applications** 폴더로 끌어다 놓습니다.
+2. 처음 한 번은 응용 프로그램 폴더에서 **FocusQueue 우클릭 → 열기**로 엽니다 (공증되지 않은 앱이라서).
 3. **시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용**에서 FocusQueue를 허용하면 할 일이 창 단위로 연결됩니다 (허용하지 않으면 앱 단위).
 
 데이터는 내 컴퓨터 밖으로 나가지 않습니다 ([데이터](#데이터) 참고).
