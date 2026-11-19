@@ -1,2 +1,13 @@
 PQ.exe
 *.tmp
+
+# macOS build output
+mac/build/
+*.app
+.build/
+
+# personal data (never commit)
+*.tsv
+focus_log.csv
+opacity.txt
+lang.txt
