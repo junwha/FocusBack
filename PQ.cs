@@ -1365,7 +1365,13 @@ class PQForm : Form
             barItem = null; UpdateBarItem();
             StartBreak();
         }
-        if (breakForms != null)
+        if (breakForms != null && breakHidden)
+        {
+            if (now >= breakEnd) EndBreak();
+            else if ((breakEnd - now).TotalSeconds <= SoonSec && !soonShown) ShowSoon();
+            else if (soonForm != null && soonForm.Visible) soonForm.Invalidate();
+        }
+        else if (breakForms != null)
         {
             if (now >= breakEnd) EndBreak();
             else foreach (var f in breakForms)
@@ -1380,6 +1386,7 @@ class PQForm : Form
 
     void BarMouseDown(object o, MouseEventArgs e)
     {
+        if (e.Button == MouseButtons.Left && breakForms != null && breakHidden) { ShowBreak(); return; } // bring the break screen back
         if (e.Button != MouseButtons.Left || breakForms != null) return;
         if (focusing) { if (stopR.Contains(e.Location)) StopFocus("집중 중지", false); return; }
         if (minusR.Contains(e.Location)) StepTier(-1);
@@ -1422,7 +1429,7 @@ class PQForm : Form
             if (breakForms != null)
             {
                 using (var b = new SolidBrush(lav)) g.FillPath(b, card);
-                TextRenderer.DrawText(g, "휴식 중  " + Clock((breakEnd - DateTime.Now).TotalSeconds), ageFont,
+                TextRenderer.DrawText(g, "휴식 중  " + Clock((breakEnd - DateTime.Now).TotalSeconds) + (breakHidden ? "  · 클릭: 휴식 화면" : ""), ageFont,
                     new Rectangle(r.X + doneW, r.Y, r.Width - doneW * 2, r.Height), lavDeep, lf);
                 return;
             }
@@ -1484,8 +1491,13 @@ class PQForm : Form
             {
                 f.Paint += PaintBreak;
                 f.MouseDoubleClick += (o, e) => { if (skipR.Contains(e.Location)) EndBreak(); }; // emergency exit
-                f.MouseDown += (o, e) => { if (e.Button == MouseButtons.Left && extR.Contains(e.Location)) ExtendFocus(); };
-                f.MouseMove += (o, e) => f.Cursor = skipR.Contains(e.Location) || extR.Contains(e.Location) ? Cursors.Hand : Cursors.Default;
+                f.MouseDown += (o, e) =>
+                {
+                    if (e.Button != MouseButtons.Left) return;
+                    if (extR.Contains(e.Location)) ExtendFocus();
+                    else if (bgR.Contains(e.Location)) HideBreak();
+                };
+                f.MouseMove += (o, e) => f.Cursor = skipR.Contains(e.Location) || extR.Contains(e.Location) || bgR.Contains(e.Location) ? Cursors.Hand : Cursors.Default;
             }
             breakForms.Add(f);
             f.Show();
@@ -1503,6 +1515,8 @@ class PQForm : Form
         if (breakForms == null) return;
         var fs = breakForms;
         breakForms = null;
+        breakHidden = false; soonShown = false;
+        if (soonForm != null) soonForm.Hide();
         foreach (var f in fs) { f.AllowClose = true; f.Close(); f.Dispose(); }
         if (!quiet)
         {
@@ -1536,6 +1550,62 @@ class PQForm : Form
         bar.Invalidate(); list.Invalidate();
     }
 
+    // break keeps counting with the cover hidden; a small card pops up 10 s before it ends
+    bool breakHidden, soonShown; Toast soonForm; Rectangle bgR;
+    const int SoonSec = 10;
+
+    void HideBreak()
+    {
+        if (breakForms == null) return;
+        breakHidden = true;
+        foreach (var f in breakForms) f.Hide();
+        if ((breakEnd - DateTime.Now).TotalSeconds <= SoonSec) ShowSoon();
+        Note("백그라운드로 휴식 중 · 끝나기 10초 전에 알려줄게요", false);
+        tick.Start();
+    }
+
+    void ShowBreak()
+    {
+        if (breakForms == null || !breakHidden) return;
+        breakHidden = false;
+        if (soonForm != null) soonForm.Hide();
+        foreach (var f in breakForms) f.Show();
+        bar.Invalidate();
+    }
+
+    void ShowSoon()
+    {
+        soonShown = true;
+        if (soonForm == null)
+        {
+            soonForm = new Toast { BackColor = Bg, Size = new Size((int)(300 * s), (int)(128 * s)) };
+            IntPtr rgn = CreateRoundRectRgn(0, 0, soonForm.Width + 1, soonForm.Height + 1, (int)(22 * s), (int)(22 * s));
+            soonForm.Region = Region.FromHrgn(rgn); DeleteObject(rgn);
+            soonForm.Paint += PaintSoon;
+            soonForm.MouseDown += (o, e) => soonForm.Hide();
+        }
+        var wa = Screen.PrimaryScreen.WorkingArea;
+        soonForm.Location = new Point(wa.X + (wa.Width - soonForm.Width) / 2, wa.Y + (wa.Height - soonForm.Height) / 2);
+        soonForm.Show();
+        System.Media.SystemSounds.Exclamation.Play();
+    }
+
+    void PaintSoon(object o, PaintEventArgs e)
+    {
+        var f = (Form)o; var g = e.Graphics;
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        g.Clear(Bg);
+        Color lav = Color.FromArgb(180, 160, 220), lavDeep = Color.FromArgb(125, 105, 170);
+        using (var p = Round(new Rectangle(0, 0, f.Width - 1, f.Height - 1), (int)(11 * s)))
+        using (var pen = new Pen(lav, 2.4f * s)) g.DrawPath(pen, p);
+        var cf = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine;
+        TextRenderer.DrawText(g, "휴식이 곧 끝나요", midFont, new Rectangle(0, (int)(12 * s), f.Width, (int)(28 * s)), lavDeep, cf);
+        double left = Math.Max(0, (breakEnd - DateTime.Now).TotalSeconds);
+        using (var big = new Font(bigFont.FontFamily, 26f))
+            TextRenderer.DrawText(g, Clock(left), big, new Rectangle(0, (int)(40 * s), f.Width, (int)(50 * s)), Ink, cf);
+        TextRenderer.DrawText(g, "자리로 돌아올 준비 · 클릭하면 닫혀요", ageFont, new Rectangle(0, (int)(94 * s), f.Width, (int)(22 * s)), Muted, cf);
+    }
+
     void PaintBreak(object o, PaintEventArgs e)
     {
         var f = (Form)o;
@@ -1553,9 +1623,20 @@ class PQForm : Form
         TextRenderer.DrawText(g, "화면에서 눈을 떼고, 일어나서 물 한 잔 + 스트레칭", Font,
             new Rectangle(c.X, c.Y + (int)(150 * s), c.Width, (int)(24 * s)), Muted, cf);
         // "5 more minutes" button
-        int ebw = (int)(150 * s), ebh = (int)(30 * s);
-        extR = doneWins == null ? Rectangle.Empty : new Rectangle(c.X + (c.Width - ebw) / 2, c.Y + (int)(188 * s), ebw, ebh);
-        if (!extR.IsEmpty) Pill(g, extR, GreenFill, GreenDeep, "+" + ExtendMin + "분 더 집중", Font);
+        // "5 more minutes" + "keep resting in the background" buttons
+        int ebw = (int)(150 * s), ebh = (int)(30 * s), egap = (int)(12 * s), ey = c.Y + (int)(188 * s);
+        if (doneWins == null)
+        {
+            extR = Rectangle.Empty;
+            bgR = new Rectangle(c.X + (c.Width - ebw) / 2, ey, ebw, ebh);
+        }
+        else
+        {
+            extR = new Rectangle(c.X + c.Width / 2 - ebw - egap / 2, ey, ebw, ebh);
+            bgR = new Rectangle(c.X + c.Width / 2 + egap / 2, ey, ebw, ebh);
+            Pill(g, extR, GreenFill, GreenDeep, "+" + ExtendMin + "분 더 집중", Font);
+        }
+        Pill(g, bgR, Color.FromArgb(235, 232, 240), GrayDeep, "백그라운드로 쉬기", Font);
         // progress
         var pr = new Rectangle(c.X + (int)(50 * s), c.Bottom - (int)(40 * s), c.Width - (int)(100 * s), (int)(8 * s));
         float done = (float)Math.Max(0, Math.Min(1, 1 - left / (breakMin * 60.0)));
