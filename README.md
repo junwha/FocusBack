@@ -1,5 +1,7 @@
 # ADHDTimer
 
+**English** | [한국어](README_ko.md)
+
 A tiny always-on-top **task queue + focus timer** widget.
 It sits in the top-right corner of the screen, shows what you're working on and what has been waiting the longest, and walks you through focus/break cycles.
 
