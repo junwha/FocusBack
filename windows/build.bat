@@ -1,5 +1,5 @@
 @echo off
-rem Builds PQ.exe. Needs nothing installed: the C# compiler ships with Windows, and the
+rem Builds PQ.exe (Windows frontend, in this folder). Needs nothing installed: the C# compiler ships with Windows, and the
 rem shared core (pq_core.dll) is downloaded from this repo's GitHub releases.
 rem   build.bat          download the core matching this checkout, then compile
 rem   build.bat --local  use the pq_core.dll already in this folder (CI / your own build)
@@ -29,4 +29,4 @@ if errorlevel 1 (
 
 :compile
 if not exist pq_core.dll ( echo pq_core.dll is missing. & exit /b 1 )
-"%CSC%" /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 /out:PQ.exe PQ.cs
+"%CSC%" /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 /out:PQ.exe PQ.cs Core.cs

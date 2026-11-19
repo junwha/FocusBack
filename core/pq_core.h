@@ -59,7 +59,7 @@ PQ_API const char* pq_log_path(pq* c);                    /* <data_dir>/focus_lo
 
 PQ_API int         pq_lang_ko(pq* c);                     /* 1 = Korean UI, 0 = English */
 PQ_API void        pq_set_lang_ko(pq* c, int ko);         /* saved to lang.txt ("en" / "ko") */
-PQ_API double      pq_opacity(pq* c);                     /* 0.3 .. 1.0, default 1.0 */
+PQ_API double      pq_opacity(pq* c);                     /* 0.3 .. 1.0, default 0.95 */
 PQ_API void        pq_set_opacity(pq* c, double v);       /* clamped, rounded to 0.01, saved to opacity.txt */
 
 /* ---------- strings (see pq_strings.c) ---------- */
@@ -166,8 +166,8 @@ PQ_API int         pq_start(pq* c, const pq_win* wins, int n, int test, double n
 PQ_API void        pq_stop(pq* c, double now);            /* user stop, logged "stopped" */
 PQ_API int         pq_in_focus(pq* c, int id);            /* item belongs to the task being focused on */
 PQ_API int         pq_owns(pq* c, pq_win w);              /* window belongs to it */
-/* Clicking another item while focusing: returns 1 = go ahead and switch, 0 = warn first
- * (show pq_tr("note.focus_warn")); a second click on the same item within 6 s returns 1. */
+/* Clicking another item while focusing: returns 1 = go ahead and switch, 0 = the core set the warning
+ * note ("note.focus_warn"); a second click on the same item within 6 s returns 1. */
 PQ_API int         pq_try_switch(pq* c, int id, double now);
 PQ_API pq_win      pq_away_home(pq* c);                   /* window to go back to from the grace card */
 
