@@ -7,9 +7,9 @@ It sits in the top-right corner of the screen, shows what you're working on and 
 
 ![Demo: tasks follow the window you're in, a focus session with the 1-minute grace card, the break screen, and the stats window](docs/demo.gif)
 
-<sub>Demo with sample data. The focus run is the 10-second test mode (Ctrl+click ▶ Start).</sub>
+<sub>Demo with sample data on Windows. The focus run is the 10-second test mode (Ctrl+click ▶ Start).</sub>
 
-> Currently **Windows** only (`PQ.cs`, a single-file C# WinForms app). A macOS version is in progress.
+Runs on **Windows** (`PQ.cs`, a single-file C# WinForms app) and **macOS** (`mac/`, a native Swift/AppKit app).
 
 The UI is available in **English** and **Korean**. It follows the system display language by default; switch any time from the right-click menu → **Language**.
 
@@ -34,7 +34,7 @@ The UI is available in **English** and **Korean**. It follows the system display
 ### Log and stats
 - Every focus session is appended to `focus_log.csv` (see below).
 - Right-click → **Stats**: total focus, sessions, completion rate, focus per day / per hour, focus by task, and recent sessions, for today / 7 days / 30 days / all time.
-- `PQ.exe --stats` opens the stats window directly.
+- `PQ.exe --stats` (Windows) or `FocusQueue.app/Contents/MacOS/FocusQueue --stats` (macOS) opens the stats window directly.
 
 ## Build (Windows)
 
@@ -46,10 +46,24 @@ build.bat
 
 This produces `PQ.exe`. Hotkey: `Ctrl+Alt+Space`. Launching it again while it's running brings the widget back on screen.
 
+## Build (macOS)
+
+Needs macOS 12 or later and the Swift toolchain (Xcode, or `xcode-select --install`). There is no Xcode project.
+
+```bash
+mac/build.sh
+```
+
+This produces `mac/build/FocusQueue.app` (universal, no Dock icon). Move it to `/Applications` and open it. `mac/build.sh --run` builds and restarts a running widget; your task queue is backed up first and never deleted.
+
+- Hotkey: `Ctrl+Option+Space`. Opening the app again while it's running brings the widget back on screen.
+- To link tasks to individual windows, allow FocusQueue in **System Settings → Privacy & Security → Accessibility**. Without it, tasks are linked per app, and the widget shows a notice you can click. The build is ad-hoc signed, so you may need to allow it again after rebuilding.
+- Differences from Windows: `Option+click` on **▶ Start** runs a 10-second test session (`Ctrl+click` on Windows), `Ctrl+click` opens the right-click menu, `Cmd+click` only selects, and `Delete` marks the selected task done.
+
 ## Data
 
-All data stays on your machine, in `%APPDATA%\ADHD-PQ\`. Nothing is sent anywhere.
-`PQ.exe --data <folder>` runs a separate instance that keeps its data in another folder (handy for a portable copy or a demo).
+All data stays on your machine, in `%APPDATA%\ADHD-PQ\` (Windows) or `~/Library/Application Support/ADHD-PQ/` (macOS). Nothing is sent anywhere.
+On Windows, `PQ.exe --data <folder>` runs a separate instance that keeps its data in another folder (handy for a portable copy or a demo).
 
 | File | Contents |
 |---|---|
@@ -71,3 +85,5 @@ All data stays on your machine, in `%APPDATA%\ADHD-PQ\`. Nothing is sent anywher
 | `outcome` | `done`, `stopped`, `left` (didn't come back within 1 min), `quit` (widget closed) |
 
 Segments shorter than 30 seconds are not logged.
+
+On macOS the files have the same format. In `items.tsv` the window column holds a `CGWindowID` (`0` = the whole app) and the process column holds the app's bundle identifier. Each launch copies `items.tsv` to `items.bak.tsv` before anything is written.

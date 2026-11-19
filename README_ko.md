@@ -7,9 +7,9 @@
 
 ![데모: 지금 있는 창에 따라 할 일이 바뀌고, 집중 중 1분 유예 카드, 휴식 화면, 통계 창](docs/demo.gif)
 
-<sub>예시 데이터로 찍은 데모입니다. 집중은 10초 테스트 모드(Ctrl+클릭 ▶ 시작)입니다.</sub>
+<sub>Windows에서 예시 데이터로 찍은 데모입니다. 집중은 10초 테스트 모드(Ctrl+클릭 ▶ 시작)입니다.</sub>
 
-> 현재는 **Windows** 버전만 있습니다(`PQ.cs`, 단일 파일 C# WinForms 앱). macOS 버전은 작업 중입니다.
+**Windows**(`PQ.cs`, 단일 파일 C# WinForms 앱)와 **macOS**(`mac/`, Swift/AppKit 네이티브 앱)에서 동작합니다.
 
 화면은 **영어**와 **한국어**를 지원합니다. 기본값은 시스템 표시 언어를 따르고, 우클릭 메뉴 → **언어**에서 언제든 바꿀 수 있습니다.
 
@@ -34,7 +34,7 @@
 ### 기록과 통계
 - 모든 집중 세션이 `focus_log.csv`에 기록됩니다(아래 참고).
 - 우클릭 → **통계 보기**: 오늘 / 7일 / 30일 / 전체 기간의 총 집중 시간, 세션 수, 완료율, 일별·시간대별 집중, 할 일별 집중, 최근 세션.
-- `PQ.exe --stats`로 통계 창을 바로 열 수 있습니다.
+- `PQ.exe --stats`(Windows) 또는 `FocusQueue.app/Contents/MacOS/FocusQueue --stats`(macOS)로 통계 창을 바로 열 수 있습니다.
 
 ## 빌드 (Windows)
 
@@ -46,10 +46,24 @@ build.bat
 
 `PQ.exe`가 만들어집니다. 단축키는 `Ctrl+Alt+Space`입니다. 실행 중에 한 번 더 실행하면 위젯을 화면으로 다시 불러옵니다.
 
+## 빌드 (macOS)
+
+macOS 12 이상과 Swift 툴체인(Xcode 또는 `xcode-select --install`)이 필요합니다. Xcode 프로젝트는 없습니다.
+
+```bash
+mac/build.sh
+```
+
+`mac/build/FocusQueue.app`이 만들어집니다(유니버설, Dock 아이콘 없음). `/Applications`로 옮겨서 실행하세요. `mac/build.sh --run`은 빌드한 뒤 실행 중인 위젯을 다시 시작합니다. 할 일 큐는 먼저 백업되고 절대 지워지지 않습니다.
+
+- 단축키는 `Ctrl+Option+Space`입니다. 실행 중에 앱을 한 번 더 열면 위젯을 화면으로 다시 불러옵니다.
+- 할 일을 창 단위로 연결하려면 **시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용**에서 FocusQueue를 허용하세요. 허용하지 않으면 앱 단위로 연결되고, 위젯에 클릭할 수 있는 안내가 표시됩니다. 빌드는 ad-hoc 서명이라 다시 빌드한 뒤에는 한 번 더 허용해야 할 수 있습니다.
+- Windows와 다른 점: **▶ 시작**을 `Option+클릭`하면 10초짜리 테스트 집중(Windows는 `Ctrl+클릭`), `Ctrl+클릭`은 우클릭 메뉴, `Cmd+클릭`은 선택만, `Delete` 키는 선택한 할 일 완료입니다.
+
 ## 데이터
 
-모든 데이터는 내 컴퓨터의 `%APPDATA%\ADHD-PQ\`에만 저장됩니다. 어디로도 전송되지 않습니다.
-`PQ.exe --data <폴더>`로 실행하면 다른 폴더에 데이터를 두는 별도 인스턴스가 뜹니다(휴대용 사본이나 데모용).
+모든 데이터는 내 컴퓨터의 `%APPDATA%\ADHD-PQ\`(Windows) 또는 `~/Library/Application Support/ADHD-PQ/`(macOS)에만 저장됩니다. 어디로도 전송되지 않습니다.
+Windows에서는 `PQ.exe --data <폴더>`로 실행하면 다른 폴더에 데이터를 두는 별도 인스턴스가 뜹니다(휴대용 사본이나 데모용).
 
 | 파일 | 내용 |
 |---|---|
@@ -71,3 +85,5 @@ build.bat
 | `outcome` | `done`(완료), `stopped`(중지), `left`(1분 안에 안 돌아옴), `quit`(위젯 종료) |
 
 30초보다 짧은 집중은 기록하지 않습니다.
+
+macOS에서도 파일 형식은 같습니다. `items.tsv`의 창 열에는 `CGWindowID`(`0` = 앱 전체)가, 프로세스 열에는 앱의 번들 ID가 들어갑니다. 실행할 때마다 무언가를 쓰기 전에 `items.tsv`를 `items.bak.tsv`로 복사해 둡니다.
