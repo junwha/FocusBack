@@ -333,8 +333,16 @@ class PQForm : Form
         NormalizeGroups();
         Relayout();
         Fit();
-        var wa = Screen.PrimaryScreen.WorkingArea;
-        Location = new Point(wa.Right - Width - (int)(10 * s), wa.Top + (int)(44 * s)); // below title-bar buttons of maximized windows
+        PlaceDefault();
+        // monitor unplugged / resolution changed: pull the widget back if it ended up off-screen
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (o, e) => BeginInvoke((Action)EnsureOnScreen);
+        // running PQ.exe again (e.g. from the Start menu) brings this one back instead of doing nothing
+        var showEvt = new System.Threading.EventWaitHandle(false, System.Threading.EventResetMode.AutoReset, "ADHD-PQ-show");
+        var waiter = new System.Threading.Thread(() =>
+        {
+            while (true) { showEvt.WaitOne(); try { BeginInvoke((Action)(() => { PlaceDefault(); Show(); Activate(); })); } catch { return; } }
+        }) { IsBackground = true };
+        waiter.Start();
 
         // repaint only every 20s -> near-zero CPU
         timer = new Timer { Interval = 20000 };
@@ -542,6 +550,7 @@ class PQForm : Form
             Track(GetForegroundWindow());
             forceGhost = true; // hotkey can add another item even for an already-linked window
             UpdateGhost();
+            EnsureOnScreen();
             Show();
             Activate();
             input.Focus();
@@ -803,6 +812,21 @@ class PQForm : Form
         TextRenderer.DrawText(g, (e.Index + 1) + "   " + it.Text, list.Font, txtR, Ink,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine |
             TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+    }
+
+    // top-right of the primary screen, below the title-bar buttons of maximized windows
+    void PlaceDefault()
+    {
+        var wa = Screen.PrimaryScreen.WorkingArea;
+        Location = new Point(wa.Right - Width - (int)(10 * s), wa.Top + (int)(44 * s));
+    }
+
+    void EnsureOnScreen()
+    {
+        var me = new Rectangle(Location, Size);
+        foreach (var sc in Screen.AllScreens)
+            if (sc.WorkingArea.Contains(new Point(me.X + me.Width / 2, me.Y + 10))) return; // still visible somewhere
+        PlaceDefault();
     }
 
     void Changed() { Save(); Relayout(); UpdateGhost(); UpdateBarItem(); Fit(); list.Invalidate(); }
@@ -1448,7 +1472,11 @@ class PQForm : Form
         bool created;
         using (var mtx = new System.Threading.Mutex(true, "ADHD-PQ-singleton", out created))
         {
-            if (!created) return; // already running
+            if (!created) // already running: ask it to come back on screen
+            {
+                try { System.Threading.EventWaitHandle.OpenExisting("ADHD-PQ-show").Set(); } catch { }
+                return;
+            }
             SetProcessDPIAware();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
