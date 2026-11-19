@@ -40,6 +40,24 @@ class DBPanel : Panel
 }
 
 // full-screen break cover: no taskbar/Alt+Tab entry, can't be closed by Alt+F4
+// small always-on-top card that never takes focus (you keep typing where you are)
+class Toast : Form
+{
+    public Toast()
+    {
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        TopMost = true;
+        StartPosition = FormStartPosition.Manual;
+        DoubleBuffered = true;
+    }
+    protected override bool ShowWithoutActivation { get { return true; } }
+    protected override CreateParams CreateParams
+    {
+        get { var cp = base.CreateParams; cp.ExStyle |= 0x80 | 0x8 | 0x08000000; return cp; } // TOOLWINDOW|TOPMOST|NOACTIVATE
+    }
+}
+
 class Overlay : Form
 {
     public bool AllowClose;
@@ -372,7 +390,11 @@ class PQForm : Form
         IntPtr prev = lastExternal;
         lastExternal = h;
         if (list == null) return;
-        if (focusing && !focusWins.Contains(h)) StopFocus("다른 창으로 이동 → 집중 초기화", true); // left the task
+        if (focusing)
+        {
+            if (!focusWins.Contains(h)) { if (!away) StartAway(prev); } // left the task: 1-minute grace
+            else if (away) EndAway(true);                                // came back in time: resume
+        }
         bool changed = false;
         foreach (Item it in list.Items)
         {
@@ -906,13 +928,12 @@ class PQForm : Form
             if (warnedItem != it || Environment.TickCount - warnTick > 6000)
             {
                 warnedItem = it; warnTick = Environment.TickCount;
-                Note("⚠ 집중 중! 한 번 더 누르면 이동 + 초기화", true);
+                Note("⚠ 집중 중! 한 번 더 누르면 이동 (1분 유예)", true);
                 System.Media.SystemSounds.Exclamation.Play();
                 return;
             }
-            StopFocus("이동해서 집중 초기화", true);
         }
-        SwitchTo(it);
+        SwitchTo(it); // leaving starts the 1-minute grace
     }
 
     // < > : move between rounds (15/3, 30/5, 60/15); remembered for the task
@@ -1129,10 +1150,76 @@ class PQForm : Form
         BackToWork();
     }
 
+    // ---- left the task while focusing: pause, show a centered 1-minute warning ----
+    bool away;
+    DateTime awayStart;
+    const int AwaySec = 60;
+    Toast awayForm;
+    IntPtr awayHome; // focus window to go back to
+    Rectangle backR, quitR;
+
+    void StartAway(IntPtr from)
+    {
+        away = true;
+        awayStart = DateTime.Now;
+        awayHome = from != IntPtr.Zero && focusWins.Contains(from) ? from : IntPtr.Zero;
+        if (awayHome == IntPtr.Zero) foreach (var w in focusWins) if (IsWindow(w)) { awayHome = w; break; }
+        if (awayForm == null)
+        {
+            awayForm = new Toast { BackColor = Bg, Size = new Size((int)(340 * s), (int)(168 * s)) };
+            IntPtr rgn = CreateRoundRectRgn(0, 0, awayForm.Width + 1, awayForm.Height + 1, (int)(22 * s), (int)(22 * s));
+            awayForm.Region = Region.FromHrgn(rgn); DeleteObject(rgn);
+            awayForm.Paint += PaintAway;
+            awayForm.MouseDown += (o, e) =>
+            {
+                if (backR.Contains(e.Location)) { if (awayHome != IntPtr.Zero && IsWindow(awayHome)) SetForegroundWindow(awayHome); }
+                else if (quitR.Contains(e.Location)) StopFocus("집중 중지", false);
+            };
+            awayForm.MouseMove += (o, e) => awayForm.Cursor = backR.Contains(e.Location) || quitR.Contains(e.Location) ? Cursors.Hand : Cursors.Default;
+        }
+        var wa = Screen.PrimaryScreen.WorkingArea;
+        awayForm.Location = new Point(wa.X + (wa.Width - awayForm.Width) / 2, wa.Y + (wa.Height - awayForm.Height) / 2);
+        awayForm.Show();
+        System.Media.SystemSounds.Exclamation.Play();
+        tick.Start();
+        bar.Invalidate(); list.Invalidate();
+    }
+
+    void EndAway(bool resume)
+    {
+        if (!away) return;
+        away = false;
+        if (resume) focusEnd += DateTime.Now - awayStart; // paused time doesn't count
+        if (awayForm != null) awayForm.Hide();
+        if (resume) Note("돌아왔어요 · 집중 이어서", false);
+        bar.Invalidate();
+    }
+
+    void PaintAway(object o, PaintEventArgs e)
+    {
+        var f = (Form)o; var g = e.Graphics;
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        g.Clear(Bg);
+        using (var p = Round(new Rectangle(0, 0, f.Width - 1, f.Height - 1), (int)(11 * s)))
+        using (var pen = new Pen(RedFill, 2.4f * s)) g.DrawPath(pen, p);
+        var cf = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine;
+        TextRenderer.DrawText(g, "⏸  집중 중이에요", midFont, new Rectangle(0, (int)(14 * s), f.Width, (int)(28 * s)), RedDeep, cf);
+        double left = AwaySec - (DateTime.Now - awayStart).TotalSeconds;
+        using (var big = new Font(bigFont.FontFamily, 26f))
+            TextRenderer.DrawText(g, Clock(left), big, new Rectangle(0, (int)(42 * s), f.Width, (int)(50 * s)), Ink, cf);
+        TextRenderer.DrawText(g, "1분 안에 돌아가면 타이머가 이어져요", Font, new Rectangle(0, (int)(92 * s), f.Width, (int)(22 * s)), Muted, cf);
+        int bw = (int)(120 * s), bh = (int)(26 * s), y = f.Height - bh - (int)(14 * s), gap = (int)(10 * s);
+        backR = new Rectangle(f.Width / 2 - bw - gap / 2, y, bw, bh);
+        quitR = new Rectangle(f.Width / 2 + gap / 2, y, bw, bh);
+        Pill(g, backR, GreenFill, GreenDeep, "↩ 돌아가기", ageFont);
+        Pill(g, quitR, Color.FromArgb(235, 232, 240), GrayDeep, "■ 그만하기", ageFont);
+    }
+
     // stop (reset) the focus timer; the time spent focusing doesn't count toward the other items' age
     void StopFocus(string note, bool warn)
     {
         if (!focusing) return;
+        if (away) EndAway(false);
         TimeSpan el = DateTime.Now - focusStart;
         foreach (Item it in list.Items)
             if (!InFocus(it)) it.Created = it.Created < focusStart ? it.Created + el : DateTime.Now;
@@ -1155,7 +1242,12 @@ class PQForm : Form
     void OnTick(object o, EventArgs e)
     {
         var now = DateTime.Now;
-        if (focusing && now >= focusEnd)
+        if (away)
+        {
+            if ((now - awayStart).TotalSeconds >= AwaySec) StopFocus("1분 안에 안 돌아와서 집중 초기화", true);
+            else if (awayForm != null) awayForm.Invalidate();
+        }
+        if (focusing && !away && now >= focusEnd)
         {
             if (focusItem != null) focusItem.Sessions = Math.Max(focusItem.Sessions, focusTier + 1); // next round for this task
             StopFocus(null, false);
@@ -1225,20 +1317,20 @@ class PQForm : Form
             }
             if (focusing)
             {
-                double total = (focusEnd - focusStart).TotalSeconds, left = (focusEnd - DateTime.Now).TotalSeconds;
+                double total = (focusEnd - focusStart).TotalSeconds, left = (focusEnd - (away ? awayStart : DateTime.Now)).TotalSeconds;
                 float done = (float)Math.Max(0, Math.Min(1, 1 - left / total));
                 using (var b = new SolidBrush(Color.White)) g.FillPath(b, card);
                 var clip = g.Clip;
                 g.SetClip(card);
                 using (var b = new SolidBrush(GreenFill)) g.FillRectangle(b, r.X, r.Y, (int)(r.Width * done), r.Height + 1);
                 g.Clip = clip;
-                using (var pen = new Pen(barWarn && note ? RedDeep : GreenDeep, 1.4f * s)) g.DrawPath(pen, card);
+                using (var pen = new Pen((barWarn && note) || away ? RedDeep : GreenDeep, 1.4f * s)) g.DrawPath(pen, card);
                 int sw = (int)(54 * s);
                 stopR = new Rectangle(r.Right - sw - (int)(6 * s), py, sw, ph);
                 Pill(g, stopR, Color.FromArgb(235, 232, 240), GrayDeep, "■ 그만", ageFont);
-                string txt = note ? barNote : "집중  " + Clock(left) + "  남음";
+                string txt = note ? barNote : away ? "⏸ 일시정지 · " + Clock(AwaySec - (DateTime.Now - awayStart).TotalSeconds) + " 안에 복귀" : "집중  " + Clock(left) + "  남음";
                 TextRenderer.DrawText(g, txt, ageFont, new Rectangle(r.X + doneW, r.Y, stopR.X - r.X - doneW - (int)(4 * s), r.Height),
-                    note && barWarn ? RedDeep : GreenDeep, lf);
+                    (note && barWarn) || away ? RedDeep : GreenDeep, lf);
                 return;
             }
             // idle: [-] 30분 [+]      [▶ 집중 시작]
