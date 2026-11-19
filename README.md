@@ -5,6 +5,10 @@
 A tiny always-on-top **task queue + focus timer** widget.
 It sits in the top-right corner of the screen, shows what you're working on and what has been waiting the longest, and walks you through focus/break cycles.
 
+![Demo: tasks follow the window you're in, a focus session with the 1-minute grace card, the break screen, and the stats window](docs/demo.gif)
+
+<sub>Demo with sample data. The focus run is the 10-second test mode (Ctrl+click ▶ Start).</sub>
+
 > Currently **Windows** only (`PQ.cs`, a single-file C# WinForms app). A macOS version is in progress.
 
 The UI is available in **English** and **Korean**. It follows the system display language by default; switch any time from the right-click menu → **Language**.
@@ -45,6 +49,7 @@ This produces `PQ.exe`. Hotkey: `Ctrl+Alt+Space`. Launching it again while it's 
 ## Data
 
 All data stays on your machine, in `%APPDATA%\ADHD-PQ\`. Nothing is sent anywhere.
+`PQ.exe --data <folder>` runs a separate instance that keeps its data in another folder (handy for a portable copy or a demo).
 
 | File | Contents |
 |---|---|

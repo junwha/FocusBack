@@ -208,7 +208,7 @@ class PQForm : Form
 
     PQForm()
     {
-        string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ADHD-PQ");
+        string dir = DataDir;
         Directory.CreateDirectory(dir);
         path = Path.Combine(dir, "items.tsv");
         settingsPath = Path.Combine(dir, "opacity.txt");
@@ -351,14 +351,14 @@ class PQForm : Form
         // monitor unplugged / resolution changed: pull the widget back if it ended up off-screen
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (o, e) => BeginInvoke((Action)EnsureOnScreen);
         // running PQ.exe again (e.g. from the Start menu) brings this one back instead of doing nothing
-        var showEvt = new System.Threading.EventWaitHandle(false, System.Threading.EventResetMode.AutoReset, "ADHD-PQ-show");
+        var showEvt = new System.Threading.EventWaitHandle(false, System.Threading.EventResetMode.AutoReset, "ADHD-PQ-show" + InstanceTag);
         var waiter = new System.Threading.Thread(() =>
         {
             while (true) { showEvt.WaitOne(); try { BeginInvoke((Action)(() => { PlaceDefault(); Show(); Activate(); })); } catch { return; } }
         }) { IsBackground = true };
         waiter.Start();
         // "PQ.exe --stats" opens the stats window of the running widget
-        var statsEvt = new System.Threading.EventWaitHandle(false, System.Threading.EventResetMode.AutoReset, "ADHD-PQ-stats");
+        var statsEvt = new System.Threading.EventWaitHandle(false, System.Threading.EventResetMode.AutoReset, "ADHD-PQ-stats" + InstanceTag);
         new System.Threading.Thread(() =>
         {
             while (true) { statsEvt.WaitOne(); try { BeginInvoke((Action)OpenStats); } catch { return; } }
@@ -792,7 +792,7 @@ class PQForm : Form
                 if (editCommit == null || !editBox.Visible || editBox.Top > hr.Bottom || editBox.Bottom < hr.Top)
                 {
                     TextRenderer.DrawText(g, name, ageFont, hr, Lerp(gc, Ink, 0.45f), hf);
-                    int nw = TextRenderer.MeasureText(g, name, ageFont, Size.Empty, hf | TextFormatFlags.NoPadding).Width;
+                    int nw = TextRenderer.MeasureText(g, name, ageFont, Size.Empty, (hf & ~TextFormatFlags.EndEllipsis) | TextFormatFlags.NoPadding).Width;
                     TextRenderer.DrawText(g, "· " + cnt, ageFont, new Rectangle(hr.X + nw + (int)(9 * s), hr.Y, (int)(40 * s), hr.Height), Lerp(gc, Bg, 0.25f), hf);
                 }
             }
@@ -2251,9 +2251,20 @@ class PQForm : Form
         }
     }
 
+    // data folder; `--data <dir>` runs a separate instance on another folder (e.g. a demo or a portable copy)
+    static string DataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ADHD-PQ");
+    static string InstanceTag = "";
+
     [STAThread]
     static void Main(string[] args)
     {
+        int di = Array.IndexOf(args, "--data");
+        if (di >= 0 && di + 1 < args.Length)
+        {
+            DataDir = Path.GetFullPath(args[di + 1]);
+            InstanceTag = "-" + ((uint)DataDir.ToLowerInvariant().GetHashCode()).ToString("x8");
+        }
+        bool wantStats = Array.IndexOf(args, "--stats") >= 0;
         if (args.Length == 2 && args[0] == "--snap") // debug: which windows would be linked from <hwnd>
         {
             SetProcessDPIAware();
@@ -2263,11 +2274,11 @@ class PQForm : Form
             return;
         }
         bool created;
-        using (var mtx = new System.Threading.Mutex(true, "ADHD-PQ-singleton", out created))
+        using (var mtx = new System.Threading.Mutex(true, "ADHD-PQ-singleton" + InstanceTag, out created))
         {
             if (!created) // already running: ask it to come back on screen
             {
-                try { System.Threading.EventWaitHandle.OpenExisting(args.Length > 0 && args[0] == "--stats" ? "ADHD-PQ-stats" : "ADHD-PQ-show").Set(); } catch { }
+                try { System.Threading.EventWaitHandle.OpenExisting((wantStats ? "ADHD-PQ-stats" : "ADHD-PQ-show") + InstanceTag).Set(); } catch { }
                 return;
             }
             SetProcessDPIAware();
