@@ -316,7 +316,7 @@ class PQForm : Form
         menu.Items.Add("집중 회차 처음으로 (15분부터)", null, (o, e) =>
         {
             var it = list.SelectedItem as Item;
-            if (it != null) { it.Sessions = 0; if (it == barItem) selTier = 0; Changed(); bar.Invalidate(); }
+            if (it != null) { SetTaskSessions(it, 0); if (it == barItem || SameGroup(it, barItem)) selTier = 0; Changed(); bar.Invalidate(); }
         });
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(OpacityMenu());
@@ -959,11 +959,26 @@ class PQForm : Form
     void StepTier(int d)
     {
         selTier = Math.Max(0, Math.Min(TierFocus.Length - 1, selTier + d));
-        if (barItem != null) { barItem.Sessions = selTier; Save(); }
+        if (barItem != null) { SetTaskSessions(barItem, selTier); Save(); }
         bar.Invalidate();
     }
 
-    static int Tier(Item it) { return it == null ? 0 : Math.Min(TierFocus.Length - 1, it.Sessions); }
+    // a group is one task: its round is the highest of its members
+    int Tier(Item it)
+    {
+        if (it == null) return 0;
+        int n = it.Sessions;
+        foreach (Item o in list.Items) if (SameGroup(o, it)) n = Math.Max(n, o.Sessions);
+        return Math.Min(TierFocus.Length - 1, n);
+    }
+
+    void SetTaskSessions(Item it, int v)
+    {
+        if (it == null) return;
+        foreach (Item o in list.Items) if (o == it || SameGroup(o, it)) o.Sessions = v;
+    }
+
+    Item lastFocusItem; // when a window belongs to several items, the bar follows the one you focused on last
 
     // ---------- task groups ----------
 
@@ -1140,7 +1155,7 @@ class PQForm : Form
     void UpdateBarItem()
     {
         if (focusing) return;
-        var it = ItemOf(lastExternal);
+        var it = lastFocusItem != null && list.Items.Contains(lastFocusItem) && GHas(lastFocusItem, lastExternal) ? lastFocusItem : ItemOf(lastExternal);
         if (it != barItem) { barItem = it; selTier = Tier(it); }
         bar.Invalidate();
     }
@@ -1157,6 +1172,7 @@ class PQForm : Form
             foreach (Item it in list.Items)
                 if (it == focusItem || SameGroup(it, focusItem))
                     foreach (var w in it.Wins) if (w.H != IntPtr.Zero) focusWins.Add(w.H);
+        if (focusItem != null) lastFocusItem = focusItem;
         focusing = true;
         focusStart = DateTime.Now;
         focusTier = selTier;
@@ -1268,7 +1284,8 @@ class PQForm : Form
         }
         if (focusing && !away && now >= focusEnd)
         {
-            if (focusItem != null) focusItem.Sessions = Math.Max(focusItem.Sessions, focusTier + 1); // next round for this task
+            foreach (var ft in FocusTask()) ft.Sessions = Math.Max(ft.Sessions, focusTier + 1); // next round for the whole task
+            lastFocusItem = focusItem;
             StopFocus(null, false);
             barItem = null; UpdateBarItem();
             StartBreak();
