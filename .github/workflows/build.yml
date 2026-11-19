@@ -3,8 +3,8 @@ name: build
 # - every push: builds the core DLL + the Windows app, and the macOS app
 # - every push to a branch: publishes the core DLL to the rolling "core" release so `build.bat` can
 #   download it (asset name = pq_core-<git tree hash of core/>-win-x64.dll, so a checkout always gets its own core)
-# - tag v*: creates a GitHub release with the Windows installer (FocusQueue-Setup-x64.exe) and the macOS
-#   disk image (FocusQueue-macOS.dmg); README links to releases/latest/download/<name>, so names never change
+# - tag v*: creates a GitHub release with the Windows installer (FocusBack-Setup-x64.exe) and the macOS
+#   disk image (FocusBack-macOS.dmg); README links to releases/latest/download/<name>, so names never change
 
 on:
   push:
@@ -33,7 +33,7 @@ jobs:
       - name: Build pq_core.dll
         shell: cmd
         run: cl /nologo /O2 /W3 /utf-8 /LD core\pq_core.c core\pq_strings.c /Fe:windows\pq_core.dll
-      - name: Build PQ.exe
+      - name: Build FocusBack.exe
         shell: cmd
         run: windows\build.bat --local
       - name: Installer
@@ -43,7 +43,7 @@ jobs:
           choco install innosetup -y --no-progress | Out-Null
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$ver" windows\installer.iss
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          Move-Item dist\FocusQueue-Setup-x64.exe .
+          Move-Item dist\FocusBack-Setup-x64.exe .
           $hash = git rev-parse --short=12 HEAD:core
           Copy-Item windows/pq_core.dll "pq_core-$hash-win-x64.dll"
           "CORE_ASSET=pq_core-$hash-win-x64.dll" >> $env:GITHUB_ENV
@@ -51,7 +51,7 @@ jobs:
         with:
           name: windows
           path: |
-            FocusQueue-Setup-x64.exe
+            FocusBack-Setup-x64.exe
             pq_core-*-win-x64.dll
       - name: Publish core DLL for build.bat
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/')
@@ -73,20 +73,20 @@ jobs:
         run: |
           cc -std=c11 -Wall -Wextra -o test_core core/tests/test_core.c core/pq_core.c core/pq_strings.c -lm
           ./test_core "$(mktemp -d)"
-      - name: Build FocusQueue.app
+      - name: Build FocusBack.app
         run: |
           if [[ "$GITHUB_REF_NAME" == v* ]]; then export APP_VERSION="${GITHUB_REF_NAME#v}"; fi
           mac/build.sh
       - name: Disk image
         run: |
           mkdir dmg
-          cp -R mac/build/FocusQueue.app dmg/
+          cp -R mac/build/FocusBack.app dmg/
           ln -s /Applications dmg/Applications
-          hdiutil create -volname FocusQueue -srcfolder dmg -ov -format UDZO FocusQueue-macOS.dmg
+          hdiutil create -volname FocusBack -srcfolder dmg -ov -format UDZO FocusBack-macOS.dmg
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: FocusQueue-macOS.dmg
+          path: FocusBack-macOS.dmg
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -99,4 +99,4 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" FocusQueue-Setup-x64.exe FocusQueue-macOS.dmg --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" FocusBack-Setup-x64.exe FocusBack-macOS.dmg --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes

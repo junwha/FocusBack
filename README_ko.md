@@ -1,6 +1,8 @@
-# ADHDTimer
+# FocusBack
 
 [English](README.md) | **한국어**
+
+> 잠깐 딴 데 가도 괜찮아요. 금방 돌아오기만 하면.
 
 항상 위에 떠 있는 작은 **할 일 큐 + 집중 타이머** 위젯입니다. Windows와 macOS에서 동작합니다.
 화면 우측 상단에 떠서 지금 하고 있는 일과 가장 오래 기다린 일을 보여주고, 집중/휴식 사이클을 이끌어 줍니다.
@@ -13,20 +15,20 @@
 
 | | 다운로드 |
 |---|---|
-| **Windows 10/11** (x64) | **[FocusQueue-Setup-x64.exe](https://github.com/junwha/ADHDTimer/releases/latest/download/FocusQueue-Setup-x64.exe)** |
-| **macOS 12 이상** (Apple Silicon·Intel) | **[FocusQueue-macOS.dmg](https://github.com/junwha/ADHDTimer/releases/latest/download/FocusQueue-macOS.dmg)** |
+| **Windows 10/11** (x64) | **[FocusBack-Setup-x64.exe](https://github.com/junwha/FocusBack/releases/latest/download/FocusBack-Setup-x64.exe)** |
+| **macOS 12 이상** (Apple Silicon·Intel) | **[FocusBack-macOS.dmg](https://github.com/junwha/FocusBack/releases/latest/download/FocusBack-macOS.dmg)** |
 
 **Windows**
-1. `FocusQueue-Setup-x64.exe`를 실행합니다. SmartScreen 경고가 뜨면 **추가 정보 → 실행**을 누릅니다.
-2. 설치 화면을 따라 진행합니다 (관리자 권한 필요 없음). 로그인할 때마다 켜지게 하려면 *Start FocusQueue when Windows starts*를 체크합니다.
-3. 설치가 끝나면 화면 우측 상단에 FocusQueue가 뜹니다. 삭제는 **설정 → 앱**에서 다른 앱처럼 하면 됩니다.
+1. `FocusBack-Setup-x64.exe`를 실행합니다. SmartScreen 경고가 뜨면 **추가 정보 → 실행**을 누릅니다.
+2. 설치 화면을 따라 진행합니다 (관리자 권한 필요 없음). 로그인할 때마다 켜지게 하려면 *Start FocusBack when Windows starts*를 체크합니다.
+3. 설치가 끝나면 화면 우측 상단에 FocusBack가 뜹니다. 삭제는 **설정 → 앱**에서 다른 앱처럼 하면 됩니다.
 
 **macOS**
-1. `FocusQueue-macOS.dmg`를 열고 **FocusQueue**를 **Applications** 폴더로 끌어다 놓습니다.
-2. 처음 열면 *"FocusQueue"에 악성 코드가 없음을 확인할 수 없다*는 경고가 뜹니다. 아직 유료 Apple 개발자 인증서로 서명하지 않은 앱이라서 그렇습니다. **완료**를 누른 뒤 **시스템 설정 → 개인정보 보호 및 보안**을 열고, 아래쪽 FocusQueue 옆의 **그래도 열기**를 누르고 확인합니다. 한 번만 하면 됩니다.
-   - 또는 터미널에서: `xattr -dr com.apple.quarantine /Applications/FocusQueue.app`
+1. `FocusBack-macOS.dmg`를 열고 **FocusBack**를 **Applications** 폴더로 끌어다 놓습니다.
+2. 처음 열면 *"FocusBack"에 악성 코드가 없음을 확인할 수 없다*는 경고가 뜹니다. 아직 유료 Apple 개발자 인증서로 서명하지 않은 앱이라서 그렇습니다. **완료**를 누른 뒤 **시스템 설정 → 개인정보 보호 및 보안**을 열고, 아래쪽 FocusBack 옆의 **그래도 열기**를 누르고 확인합니다. 한 번만 하면 됩니다.
+   - 또는 터미널에서: `xattr -dr com.apple.quarantine /Applications/FocusBack.app`
    - macOS 14 이하에서는 **우클릭 → 열기**로도 됩니다.
-3. **시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용**에서 FocusQueue를 허용하면 할 일이 창 단위로 연결됩니다 (허용하지 않으면 앱 단위).
+3. **시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용**에서 FocusBack를 허용하면 할 일이 창 단위로 연결됩니다 (허용하지 않으면 앱 단위).
 
 데이터는 내 컴퓨터 밖으로 나가지 않습니다 ([데이터](#데이터) 참고).
 
@@ -60,13 +62,13 @@
 ### 기록과 통계
 - 모든 집중 세션이 `focus_log.csv`에 기록됩니다(아래 참고).
 - 우클릭 → **통계 보기**: 오늘 / 7일 / 30일 / 전체 기간의 총 집중 시간, 세션 수, 완료율, 일별·시간대별 집중, 할 일별 집중, 최근 세션.
-- `PQ.exe --stats` (Windows) 또는 `FocusQueue.app/Contents/MacOS/FocusQueue --stats` (macOS)로 통계 창을 바로 열 수 있습니다.
+- `FocusBack.exe --stats` (Windows) 또는 `FocusBack.app/Contents/MacOS/FocusBack --stats` (macOS)로 통계 창을 바로 열 수 있습니다.
 
 ## 구조
 
 ```
 core/      pq_core.c/.h    공통 C 코어: 할 일 큐, 묶음, 파일, 집중/휴식 규칙, 기록, 통계, 모든 화면 문구
-windows/   PQ.cs, Core.cs  Windows 프론트엔드 (C# WinForms): 창 추적, 그리기, 입력
+windows/   FocusBack.cs, Core.cs  Windows 프론트엔드 (C# WinForms): 창 추적, 그리기, 입력
 mac/       Sources/*.swift macOS 프론트엔드 (Swift/AppKit): 창 추적, 그리기, 입력
 ```
 
@@ -78,11 +80,11 @@ mac/       Sources/*.swift macOS 프론트엔드 (Swift/AppKit): 창 추적, 그
 ```bat
 windows\build.bat
 ```
-C# 컴파일러는 Windows에 들어 있습니다. 스크립트가 지금 체크아웃에 맞는 `pq_core.dll`을 [core 릴리스](https://github.com/junwha/ADHDTimer/releases/tag/core)에서 받아서(CI가 `main`의 커밋마다 올림) `windows\PQ.exe`를 만듭니다. 코어를 직접 빌드했다면(`cl /utf-8 /LD core\pq_core.c core\pq_strings.c`) DLL을 `windows\`에 두고 `windows\build.bat --local`을 실행합니다.
+C# 컴파일러는 Windows에 들어 있습니다. 스크립트가 지금 체크아웃에 맞는 `pq_core.dll`을 [core 릴리스](https://github.com/junwha/FocusBack/releases/tag/core)에서 받아서(CI가 `main`의 커밋마다 올림) `windows\FocusBack.exe`를 만듭니다. 코어를 직접 빌드했다면(`cl /utf-8 /LD core\pq_core.c core\pq_strings.c`) DLL을 `windows\`에 두고 `windows\build.bat --local`을 실행합니다.
 
 **macOS** – Swift 도구가 필요합니다 (Xcode, 또는 `xcode-select --install`):
 ```bash
-mac/build.sh          # mac/build/FocusQueue.app 빌드 (코어를 함께 컴파일해서 링크)
+mac/build.sh          # mac/build/FocusBack.app 빌드 (코어를 함께 컴파일해서 링크)
 mac/build.sh --run    # 실행 중인 위젯도 다시 시작 (할 일 목록은 먼저 백업)
 ```
 
@@ -97,8 +99,8 @@ macOS에서는 **▶ 시작**을 `Option+클릭`하면 10초 테스트 집중(Wi
 
 ## 데이터
 
-모든 데이터는 내 컴퓨터의 `%APPDATA%\ADHD-PQ\`(Windows) 또는 `~/Library/Application Support/ADHD-PQ/`(macOS)에만 저장됩니다. 어디로도 전송되지 않습니다.
-Windows에서는 `PQ.exe --data <폴더>`로 실행하면 다른 폴더에 데이터를 두는 별도 인스턴스가 뜹니다(휴대용 사본이나 데모용).
+모든 데이터는 내 컴퓨터의 `%APPDATA%\FocusBack\`(Windows) 또는 `~/Library/Application Support/FocusBack/`(macOS)에만 저장됩니다. 어디로도 전송되지 않습니다.
+Windows에서는 `FocusBack.exe --data <폴더>`로 실행하면 다른 폴더에 데이터를 두는 별도 인스턴스가 뜹니다(휴대용 사본이나 데모용).
 
 | 파일 | 내용 |
 |---|---|

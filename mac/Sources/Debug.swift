@@ -1,5 +1,5 @@
-// Test hooks, only active when the app is started with FOCUSQUEUE_DEBUG=1.
-// Send a command from a shell:  FocusQueue.app/Contents/MacOS/FocusQueue --debug "<command>"
+// Test hooks, only active when the app is started with FOCUSBACK_DEBUG=1.
+// Send a command from a shell:  FocusBack.app/Contents/MacOS/FocusBack --debug "<command>"
 import AppKit
 import PQCore
 
@@ -27,7 +27,7 @@ enum Debug {
         case "hotkey": w.hotkey()
         case "snap": snap(w, URL(fileURLWithPath: arg, isDirectory: true))
         case "quit": NSApp.terminate(nil)
-        default: NSLog("FocusQueue debug: unknown command %@", cmd)
+        default: NSLog("FocusBack debug: unknown command %@", cmd)
         }
         w.needsDisplay = true
     }

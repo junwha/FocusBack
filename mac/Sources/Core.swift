@@ -5,14 +5,23 @@ import PQCore
 
 func now() -> Double { Date().timeIntervalSince1970 }
 
-/// the data folder: ~/Library/Application Support/ADHD-PQ, or FOCUSQUEUE_DATA_DIR for tests
+/// the data folder: ~/Library/Application Support/FocusBack, or FOCUSBACK_DATA_DIR for tests.
+/// The folder of versions from before the rename is moved over once; if that fails it is used as is.
 enum DataDir {
+    static let legacyName = "ADHD-PQ" // data folder name before the app was called FocusBack
     static let url: URL = {
-        if let custom = ProcessInfo.processInfo.environment["FOCUSQUEUE_DATA_DIR"], !custom.isEmpty {
+        if let custom = ProcessInfo.processInfo.environment["FOCUSBACK_DATA_DIR"], !custom.isEmpty {
             return URL(fileURLWithPath: (custom as NSString).expandingTildeInPath, isDirectory: true)
         }
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("ADHD-PQ", isDirectory: true)
+        let fm = FileManager.default
+        let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let dir = base.appendingPathComponent("FocusBack", isDirectory: true)
+        let old = base.appendingPathComponent(legacyName, isDirectory: true)
+        var isDir: ObjCBool = false
+        if !fm.fileExists(atPath: dir.path) && fm.fileExists(atPath: old.path, isDirectory: &isDir) && isDir.boolValue {
+            do { try fm.moveItem(at: old, to: dir) } catch { return old } // keep using the old folder this run
+        }
+        return dir
     }()
 }
 

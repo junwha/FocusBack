@@ -1,6 +1,8 @@
-# ADHDTimer
+# FocusBack
 
 **English** | [한국어](README_ko.md)
+
+> Okay to get distracted for a moment, as long as you get back on track quick.
 
 A tiny always-on-top **task queue + focus timer** widget for Windows and macOS.
 It sits in the top-right corner of the screen, shows what you're working on and what has been waiting the longest, and walks you through focus/break cycles.
@@ -13,20 +15,20 @@ It sits in the top-right corner of the screen, shows what you're working on and 
 
 | | Download |
 |---|---|
-| **Windows 10/11** (x64) | **[FocusQueue-Setup-x64.exe](https://github.com/junwha/ADHDTimer/releases/latest/download/FocusQueue-Setup-x64.exe)** |
-| **macOS 12+** (Apple Silicon & Intel) | **[FocusQueue-macOS.dmg](https://github.com/junwha/ADHDTimer/releases/latest/download/FocusQueue-macOS.dmg)** |
+| **Windows 10/11** (x64) | **[FocusBack-Setup-x64.exe](https://github.com/junwha/FocusBack/releases/latest/download/FocusBack-Setup-x64.exe)** |
+| **macOS 12+** (Apple Silicon & Intel) | **[FocusBack-macOS.dmg](https://github.com/junwha/FocusBack/releases/latest/download/FocusBack-macOS.dmg)** |
 
 **Windows**
-1. Run `FocusQueue-Setup-x64.exe`. If SmartScreen warns about an unknown app: **More info → Run anyway**.
-2. Click through the installer (no admin rights needed). Tick *Start FocusQueue when Windows starts* if you want it at every login.
-3. FocusQueue starts in the top-right corner. Uninstall it from **Settings → Apps** like any other app.
+1. Run `FocusBack-Setup-x64.exe`. If SmartScreen warns about an unknown app: **More info → Run anyway**.
+2. Click through the installer (no admin rights needed). Tick *Start FocusBack when Windows starts* if you want it at every login.
+3. FocusBack starts in the top-right corner. Uninstall it from **Settings → Apps** like any other app.
 
 **macOS**
-1. Open `FocusQueue-macOS.dmg` and drag **FocusQueue** onto **Applications**.
-2. The first time, macOS says it *could not verify "FocusQueue" is free of malware*. That's because the app isn't signed with a paid Apple Developer ID yet. Click **Done**, open **System Settings → Privacy & Security**, scroll down, click **Open Anyway** next to FocusQueue, and confirm. You only do this once.
-   - Or, in Terminal: `xattr -dr com.apple.quarantine /Applications/FocusQueue.app`
+1. Open `FocusBack-macOS.dmg` and drag **FocusBack** onto **Applications**.
+2. The first time, macOS says it *could not verify "FocusBack" is free of malware*. That's because the app isn't signed with a paid Apple Developer ID yet. Click **Done**, open **System Settings → Privacy & Security**, scroll down, click **Open Anyway** next to FocusBack, and confirm. You only do this once.
+   - Or, in Terminal: `xattr -dr com.apple.quarantine /Applications/FocusBack.app`
    - On macOS 14 and earlier, **right-click → Open** also works.
-3. Allow FocusQueue in **System Settings → Privacy & Security → Accessibility** so tasks can follow individual windows (without it, they follow whole apps).
+3. Allow FocusBack in **System Settings → Privacy & Security → Accessibility** so tasks can follow individual windows (without it, they follow whole apps).
 
 Your data never leaves your computer (see [Data](#data)).
 
@@ -60,13 +62,13 @@ Your data never leaves your computer (see [Data](#data)).
 ### Log and stats
 - Every focus session is appended to `focus_log.csv` (see below).
 - Right-click → **Stats**: total focus, sessions, completion rate, focus per day / per hour, focus by task, and recent sessions, for today / 7 days / 30 days / all time.
-- `PQ.exe --stats` (Windows) or `FocusQueue.app/Contents/MacOS/FocusQueue --stats` (macOS) opens the stats window directly.
+- `FocusBack.exe --stats` (Windows) or `FocusBack.app/Contents/MacOS/FocusBack --stats` (macOS) opens the stats window directly.
 
 ## How it's built
 
 ```
 core/      pq_core.c/.h   shared C core: queue, groups, files, focus/break rules, log, stats, all UI strings
-windows/   PQ.cs, Core.cs Windows frontend (C# WinForms): window tracking, drawing, input
+windows/   FocusBack.cs, Core.cs Windows frontend (C# WinForms): window tracking, drawing, input
 mac/       Sources/*.swift macOS frontend (Swift/AppKit): window tracking, drawing, input
 ```
 
@@ -78,11 +80,11 @@ Both apps are thin frontends over the same core, so a rule or a string changes i
 ```bat
 windows\build.bat
 ```
-The C# compiler ships with Windows. The script downloads the prebuilt `pq_core.dll` matching your checkout from the [core release](https://github.com/junwha/ADHDTimer/releases/tag/core) (CI publishes it for every commit on `main`) and produces `windows\PQ.exe`. If you build the core yourself (`cl /utf-8 /LD core\pq_core.c core\pq_strings.c`), put the DLL in `windows\` and run `windows\build.bat --local`.
+The C# compiler ships with Windows. The script downloads the prebuilt `pq_core.dll` matching your checkout from the [core release](https://github.com/junwha/FocusBack/releases/tag/core) (CI publishes it for every commit on `main`) and produces `windows\FocusBack.exe`. If you build the core yourself (`cl /utf-8 /LD core\pq_core.c core\pq_strings.c`), put the DLL in `windows\` and run `windows\build.bat --local`.
 
 **macOS** – needs the Swift toolchain (Xcode, or `xcode-select --install`):
 ```bash
-mac/build.sh          # builds mac/build/FocusQueue.app (core compiled and linked in)
+mac/build.sh          # builds mac/build/FocusBack.app (core compiled and linked in)
 mac/build.sh --run    # also restarts a running widget (your queue is backed up first)
 ```
 
@@ -97,8 +99,8 @@ On macOS, `Option+click` on **▶ Start** runs a 10-second test session (`Ctrl+c
 
 ## Data
 
-All data stays on your machine, in `%APPDATA%\ADHD-PQ\` (Windows) or `~/Library/Application Support/ADHD-PQ/` (macOS). Nothing is sent anywhere.
-On Windows, `PQ.exe --data <folder>` runs a separate instance that keeps its data in another folder (handy for a portable copy or a demo).
+All data stays on your machine, in `%APPDATA%\FocusBack\` (Windows) or `~/Library/Application Support/FocusBack/` (macOS). Nothing is sent anywhere.
+On Windows, `FocusBack.exe --data <folder>` runs a separate instance that keeps its data in another folder (handy for a portable copy or a demo).
 
 | File | Contents |
 |---|---|

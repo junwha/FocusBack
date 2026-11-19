@@ -13,7 +13,7 @@ let showName = Notification.Name(stableName("show")), statsName = Notification.N
 func stableName(_ kind: String) -> String {
     var h: UInt64 = 1469598103934665603
     for b in DataDir.url.path.utf8 { h = (h ^ UInt64(b)) &* 1099511628211 }
-    return "FocusQueue.\(String(h, radix: 36)).\(kind)"
+    return "FocusBack.\(String(h, radix: 36)).\(kind)"
 }
 
 if lockFd >= 0 && flock(lockFd, LOCK_EX | LOCK_NB) != 0 {
@@ -52,7 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dc = DistributedNotificationCenter.default()
         dc.addObserver(forName: showName, object: nil, queue: .main) { [unowned self] _ in self.widget.showAgain() }
         dc.addObserver(forName: statsName, object: nil, queue: .main) { [unowned self] _ in self.widget.openStats() }
-        if ProcessInfo.processInfo.environment["FOCUSQUEUE_DEBUG"] == "1" {
+        if ProcessInfo.processInfo.environment["FOCUSBACK_DEBUG"] == "1" {
             dc.addObserver(forName: debugName, object: nil, queue: .main) { [unowned self] n in
                 if let c = n.object as? String { Debug.run(c, self.widget) }
             }
