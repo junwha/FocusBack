@@ -1,4 +1,4 @@
-// C# bindings for the shared core (core/pq_core.h, loaded from pq_core.dll next to PQ.exe).
+// C# bindings for the shared core (core/pq_core.h, loaded from pq_core.dll next to FocusBack.exe).
 // One process = one core instance; strings cross the boundary as UTF-8.
 using System;
 using System.Runtime.InteropServices;
@@ -144,8 +144,8 @@ static class Core
     {
         int v;
         try { v = pq_api_version(); }
-        catch (DllNotFoundException) { return "pq_core.dll was not found next to PQ.exe."; }
-        if (v != ApiVersion) return "pq_core.dll is version " + v + ", PQ.exe needs " + ApiVersion + ". Run build.bat again.";
+        catch (DllNotFoundException) { return "pq_core.dll was not found next to FocusBack.exe."; }
+        if (v != ApiVersion) return "pq_core.dll is version " + v + ", FocusBack.exe needs " + ApiVersion + ". Run build.bat again.";
         c = pq_open(U(dir), systemKorean ? 1 : 0, Now);
         return c == IntPtr.Zero ? "pq_core could not start." : null;
     }

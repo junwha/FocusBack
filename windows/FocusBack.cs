@@ -1,4 +1,4 @@
-// FocusQueue for Windows - the WinForms frontend. All rules and state live in the shared core
+// FocusBack for Windows - the WinForms frontend. All rules and state live in the shared core
 // (core/pq_core.h via Core.cs); this file only tracks windows, draws, and handles input.
 // Build: build.bat (no installs: the C# compiler ships with Windows, the core DLL is downloaded)
 using System;
@@ -278,14 +278,14 @@ class PQForm : Form
         PlaceDefault();
         // monitor unplugged / resolution changed: pull the widget back if it ended up off-screen
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (o, e) => BeginInvoke((Action)EnsureOnScreen);
-        // running PQ.exe again brings this one back instead of doing nothing
-        var showEvt = new System.Threading.EventWaitHandle(false, System.Threading.EventResetMode.AutoReset, "ADHD-PQ-show" + InstanceTag);
+        // running FocusBack.exe again brings this one back instead of doing nothing
+        var showEvt = new System.Threading.EventWaitHandle(false, System.Threading.EventResetMode.AutoReset, "FocusBack-show" + InstanceTag);
         new System.Threading.Thread(() =>
         {
             while (true) { showEvt.WaitOne(); try { BeginInvoke((Action)(() => { PlaceDefault(); Show(); Activate(); })); } catch { return; } }
         }) { IsBackground = true }.Start();
-        // "PQ.exe --stats" opens the stats window of the running widget
-        var statsEvt = new System.Threading.EventWaitHandle(false, System.Threading.EventResetMode.AutoReset, "ADHD-PQ-stats" + InstanceTag);
+        // "FocusBack.exe --stats" opens the stats window of the running widget
+        var statsEvt = new System.Threading.EventWaitHandle(false, System.Threading.EventResetMode.AutoReset, "FocusBack-stats" + InstanceTag);
         new System.Threading.Thread(() =>
         {
             while (true) { statsEvt.WaitOne(); try { BeginInvoke((Action)OpenStats); } catch { return; } }
@@ -1588,7 +1588,16 @@ class PQForm : Form
     // ---------- startup ----------
 
     // data folder; `--data <dir>` runs a separate instance on another folder (e.g. a demo or a portable copy)
-    static string DataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ADHD-PQ");
+    static readonly string AppData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+    static string DataDir = Path.Combine(AppData, "FocusBack");
+
+    // versions before FocusBack kept their data in %APPDATA%\ADHD-PQ: move it over once
+    static void MoveOldData()
+    {
+        string old = Path.Combine(AppData, "ADHD-PQ");
+        try { if (!Directory.Exists(DataDir) && Directory.Exists(old)) Directory.Move(old, DataDir); }
+        catch { if (!Directory.Exists(DataDir)) DataDir = old; } // in use: keep using the old folder this time
+    }
     static string InstanceTag = "";
 
     [STAThread]
@@ -1602,18 +1611,19 @@ class PQForm : Form
         }
         bool wantStats = Array.IndexOf(args, "--stats") >= 0;
         bool created;
-        using (var mtx = new System.Threading.Mutex(true, "ADHD-PQ-singleton" + InstanceTag, out created))
+        using (var mtx = new System.Threading.Mutex(true, "FocusBack-singleton" + InstanceTag, out created))
         {
             if (!created) // already running: ask it to come back on screen (or open its stats)
             {
-                try { System.Threading.EventWaitHandle.OpenExisting((wantStats ? "ADHD-PQ-stats" : "ADHD-PQ-show") + InstanceTag).Set(); } catch { }
+                try { System.Threading.EventWaitHandle.OpenExisting((wantStats ? "FocusBack-stats" : "FocusBack-show") + InstanceTag).Set(); } catch { }
                 return;
             }
+            if (di < 0) MoveOldData();
             SetProcessDPIAware();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             string err = Core.Open(DataDir, System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "ko");
-            if (err != null) { MessageBox.Show(err, "FocusQueue"); return; }
+            if (err != null) { MessageBox.Show(err, "FocusBack"); return; }
             var form = new PQForm();
             if (wantStats) form.Shown += (o, e) => form.OpenStats();
             Application.Run(form);

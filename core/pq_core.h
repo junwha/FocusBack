@@ -1,5 +1,5 @@
 /*
- * pq_core - the platform-independent core of FocusQueue (task queue + focus timer).
+ * pq_core - the platform-independent core of FocusBack (task queue + focus timer).
  *
  * The core owns all state and rules: the task queue and groups, the files in the data folder,
  * focus rounds, the focus / away (1-minute grace) / break state machine, the focus log,
