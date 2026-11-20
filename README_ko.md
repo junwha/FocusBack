@@ -122,3 +122,7 @@ Windows에서는 `FocusBack.exe --data <폴더>`로 실행하면 다른 폴더�
 | `outcome` | `done`(완료), `stopped`(중지), `left`(1분 안에 안 돌아옴), `quit`(위젯 종료) |
 
 30초보다 짧은 집중은 기록하지 않습니다. 실행할 때마다 `items.tsv`를 먼저 `items.bak.tsv`로 복사해 둡니다. macOS의 `items.tsv`에서 창 열에는 `CGWindowID`가(창 단위 추적을 못 할 때, 즉 손쉬운 사용 권한이 없을 때는 앱마다 정해진 음수 ID가), 프로세스 열에는 앱의 번들 ID가 들어갑니다.
+
+## 라이선스
+
+[MIT](LICENSE)

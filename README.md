@@ -122,3 +122,7 @@ On Windows, `FocusBack.exe --data <folder>` runs a separate instance that keeps 
 | `outcome` | `done`, `stopped`, `left` (didn't come back within 1 min), `quit` (widget closed) |
 
 Segments shorter than 30 seconds are not logged. Each launch copies `items.tsv` to `items.bak.tsv` before anything is written. On macOS the window column of `items.tsv` holds a `CGWindowID`, or a negative per-app id when windows are tracked per app (no Accessibility permission), and the process column holds the app's bundle identifier.
+
+## License
+
+[MIT](LICENSE)
