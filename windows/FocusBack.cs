@@ -42,6 +42,12 @@ class ClipListBox : ListBox
     {
         get { var cp = base.CreateParams; cp.Style |= 0x02000000; return cp; } // WS_CLIPCHILDREN
     }
+    // every row paints its own background, so skip the erase-to-blank that made the list flash on each repaint
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == 0x14 /*WM_ERASEBKGND*/ && Items.Count > 0) { m.Result = (IntPtr)1; return; }
+        base.WndProc(ref m);
+    }
 }
 
 // full-screen break cover: no taskbar/Alt+Tab entry, can't be closed by Alt+F4
@@ -523,13 +529,15 @@ class PQForm : Form
         if ((ev & Core.EvBreakSoon) != 0) ShowSoon();
         if ((ev & Core.EvBreakEnd) != 0) { CloseBreakScreen(); System.Media.SystemSounds.Asterisk.Play(); BackToWork(); }
         if ((ev & (Core.EvChanged | Core.EvFocusDone | Core.EvAwayTimeout)) != 0) Sync();
-        Kick();
+        Kick(ev != 0);
     }
 
-    void Kick()
+    // the 250 ms tick only moves the bar's countdown; the list repaints when something actually changed
+    void Kick(bool list = true)
     {
         if (Core.NeedsTick) tick.Start();
-        bar.Invalidate(); list.Invalidate();
+        bar.Invalidate();
+        if (list) this.list.Invalidate();
     }
 
     void OnTick(object o, EventArgs e)
@@ -556,7 +564,9 @@ class PQForm : Form
             string t = input.Text.Trim();
             if (t.Length == 0) return;
             int id = Core.Add(t, e.Shift); // Shift+Enter = top
-            Attach(id, lastExternal);
+            // while focusing, a task jotted down from the task's own window is a note for later:
+            // linking it to that window would make it part of the focus (and show it as the focused one)
+            if (!Core.Owns(lastExternal)) Attach(id, lastExternal);
             input.Clear();
             forceGhost = false;
             BackToWork(); // the entry turns into the item in place and you're back in your window

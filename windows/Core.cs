@@ -95,6 +95,7 @@ static class Core
     [DllImport(D, CallingConvention = CC)] static extern int pq_start(IntPtr c, long[] wins, int n, int test, double now);
     [DllImport(D, CallingConvention = CC)] static extern void pq_stop(IntPtr c, double now);
     [DllImport(D, CallingConvention = CC)] static extern int pq_in_focus(IntPtr c, int id);
+    [DllImport(D, CallingConvention = CC)] static extern int pq_owns(IntPtr c, long w);
     [DllImport(D, CallingConvention = CC)] static extern int pq_try_switch(IntPtr c, int id, double now);
     [DllImport(D, CallingConvention = CC)] static extern long pq_away_home(IntPtr c);
     [DllImport(D, CallingConvention = CC)] static extern int pq_tick(IntPtr c, double now);
@@ -215,6 +216,7 @@ static class Core
     }
     public static void Stop() { pq_stop(c, Now); }
     public static bool InFocus(int id) { return pq_in_focus(c, id) != 0; }
+    public static bool Owns(IntPtr w) { return pq_owns(c, w.ToInt64()) != 0; }
     public static bool TrySwitch(int id) { return pq_try_switch(c, id, Now) != 0; }
     public static IntPtr AwayHome { get { return (IntPtr)pq_away_home(c); } }
     public static int Tick() { return pq_tick(c, Now); }
