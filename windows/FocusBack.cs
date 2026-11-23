@@ -34,6 +34,16 @@ class Toast : Form
     }
 }
 
+// the inline rename box is a child of the list; without WS_CLIPCHILDREN the list's repaint
+// draws over it and only the caret is left (looks like a stray ' before the name)
+class ClipListBox : ListBox
+{
+    protected override CreateParams CreateParams
+    {
+        get { var cp = base.CreateParams; cp.Style |= 0x02000000; return cp; } // WS_CLIPCHILDREN
+    }
+}
+
 // full-screen break cover: no taskbar/Alt+Tab entry, can't be closed by Alt+F4
 class Overlay : Form
 {
@@ -216,7 +226,7 @@ class PQForm : Form
         input.KeyDown += InputKeyDown;
         input.HandleCreated += (o, e) => SetCue();
 
-        list = new ListBox
+        list = new ClipListBox
         {
             Dock = DockStyle.Top,
             DrawMode = DrawMode.OwnerDrawVariable,
