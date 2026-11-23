@@ -368,6 +368,35 @@ static void test_state_machine(void)
     }
 }
 
+/* grace card "part of this task": the window joins the focused item, focus goes on, away time counts */
+static void test_adopt(void)
+{
+    const char* d = dir("adopt");
+    double t0 = local_time(2026, 3, 4, 10, 0), t = t0;
+    pq_win one[1] = { 1 };
+    int a, ev;
+    pq* c = pq_open(d, 0, t0);
+    a = pq_add(c, "Task A", 0, t0); pq_link(c, a, 1, "app.a", "A", 1);
+    pq_activate(c, 1, "A", t);
+    CHECK(pq_adopt(c, "app.x", "X", t) == 0);            /* not focusing */
+    CHECK(pq_start(c, one, 1, 0, t) == 1);
+    CHECK(pq_adopt(c, "app.a", "A", t + 5) == 0);        /* not away */
+    ev = pq_activate(c, 7, "Docs", t + 10);              /* a window the task didn't know */
+    CHECK((ev & PQ_EV_AWAY_START) && pq_state(c) == PQ_AWAY && !pq_owns(c, 7));
+    ev = pq_adopt(c, "app.x", "Docs", t + 20);
+    CHECK((ev & PQ_EV_AWAY_END) && (ev & PQ_EV_CHANGED));
+    CHECK(pq_state(c) == PQ_FOCUS && pq_owns(c, 7));
+    CHECK(pq_has(c, a, 7) && pq_win_count(c, a) == 2);   /* linked for next time */
+    CHECK_STR(pq_note(c, t + 20), "Window added to the task · focus continues");
+    CHECK_NEAR(pq_focus_left(c, t + 20), 900 - 20, 1e-6); /* the 10 s there counted as focus */
+    CHECK(pq_activate(c, 1, "A", t + 30) == PQ_EV_CHANGED); /* moving between them: no grace card */
+    CHECK(pq_activate(c, 7, "Docs", t + 40) == PQ_EV_CHANGED);
+    pq_close(c, t + 45);
+    c = pq_open(d, 0, t + 50);                           /* the link was saved */
+    CHECK(pq_win_count(c, pq_id_at(c, 0)) == 2);
+    pq_close(c, t + 50);
+}
+
 static void test_groups(void)
 {
     const char* d = dir("groups");
@@ -516,6 +545,7 @@ int main(int argc, char** argv)
     test_old_formats();
     test_unreadable();
     test_state_machine();
+    test_adopt();
     test_groups();
     test_migration();
     test_stats();

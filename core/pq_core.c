@@ -1683,6 +1683,24 @@ void pq_stop(pq* c, double now) { if (c) stop_focus(c, "note.stopped", 0, "stopp
 int pq_in_focus(pq* c, int id) { return c ? in_focus(c, by_id(c, id)) : 0; }
 int pq_owns(pq* c, pq_win w) { return c && c->focusing ? owns(c, w) : 0; }
 
+/* Adopt: "this window is part of the task" from the grace card. The current window joins the focus
+ * (and the focused item, so it stays part of the task next time); the time spent there counts as focus. */
+int pq_adopt(pq* c, const char* proc, const char* title, double now)
+{
+    item* it;
+    pq_win w;
+    if (!c || !c->focusing || !c->away || c->current == 0) return 0;
+    w = c->current;
+    it = item_of(c, c->away_home);
+    if (!it) it = by_id(c, c->focus_item);
+    if (it && !has(it, w)) add_win(it, w, proc ? proc : "", title ? title : "");
+    push_win(&c->fw, &c->nfw, w);
+    end_away(c, 0, now);
+    set_note_key(c, "note.adopted", 0, now);
+    save(c);
+    return PQ_EV_AWAY_END | PQ_EV_CHANGED;
+}
+
 /* TrySwitch: warn once, second click (within 6 s) goes */
 int pq_try_switch(pq* c, int id, double now)
 {

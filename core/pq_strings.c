@@ -41,6 +41,7 @@ const pq_string PQ_STRINGS[] = {
     { "note.focus_warn",     "⚠ Focusing! Click again to switch (1 min grace)", "⚠ 집중 중! 한 번 더 누르면 이동 (1분 유예)" },
     { "note.stopped",        "Focus stopped",                           "집중 중지" },
     { "note.back",           "Welcome back · focus continues",          "돌아왔어요 · 집중 이어서" },
+    { "note.adopted",        "Window added to the task · focus continues", "이 창을 작업에 넣었어요 · 집중 이어서" },
     { "note.timeout",        "Didn't come back within 1 min · focus reset", "1분 안에 안 돌아와서 집중 초기화" },
     { "note.extended",       "+{0} min · break comes back after",       "+{0}분 연장 · 끝나면 다시 휴식" },
     { "note.background",     "Resting in the background · alert 10 s before the end", "백그라운드로 휴식 중 · 끝나기 10초 전에 알려줄게요" },
@@ -50,6 +51,7 @@ const pq_string PQ_STRINGS[] = {
     { "away.title",          "⏸  You're focusing",                      "⏸  집중 중이에요" },
     { "away.body",           "Come back within 1 min to keep the timer", "1분 안에 돌아가면 타이머가 이어져요" },
     { "away.back",           "↩ Go back",                               "↩ 돌아가기" },
+    { "away.adopt",          "+ Part of task",                          "+ 작업에 포함" },
     { "away.stop",           "■ Stop",                                  "■ 그만하기" },
 
     /* break screen */

@@ -165,7 +165,7 @@ class PQForm : Form
         return Color.FromArgb(a.R + (int)((b.R - a.R) * t), a.G + (int)((b.G - a.G) * t), a.B + (int)((b.B - a.B) * t));
     }
 
-    Rectangle minusR, plusR, goR, stopR, skipR, extR, bgR, backR, quitR;
+    Rectangle minusR, plusR, goR, stopR, skipR, extR, bgR, backR, adoptR, quitR;
     List<Overlay> breakForms;       // the break screen (one per monitor) while a break runs
     Toast awayForm, soonForm;
 
@@ -333,9 +333,17 @@ class PQForm : Form
         if (cls == "Shell_TrayWnd" || cls == "Progman" || cls == "WorkerW" || cls == "Shell_SecondaryTrayWnd"
             || cls == "Windows.UI.Core.CoreWindow" || cls == "XamlExplorerHostIslandWindow") return; // taskbar/desktop/start/alt-tab
         if (h == lastExternal) return;
+        // notification toasts, tool palettes, hidden helper windows: briefly in front, never a place you work in
+        int ex = GetWindowLong(h, -20 /*GWL_EXSTYLE*/);
+        int cloaked;
+        bool transient = !IsWindowVisible(h) || (ex & (0x80 /*TOOLWINDOW*/ | 0x08000000 /*NOACTIVATE*/)) != 0
+            || (DwmGetWindowAttribute(h, 14 /*DWMWA_CLOAKED*/, out cloaked, 4) == 0 && cloaked != 0);
+        if (transient) { if (Core.State != Core.Idle) Trace("skip", h, cls); return; }
         IntPtr prev = lastExternal;
         lastExternal = h;
+        int before = Core.State;
         OnCore(Core.Activate(h, TitleOf(h)));
+        if (before != Core.State || Core.State != Core.Idle) Trace(Core.State == Core.Away ? "AWAY" : "ok", h, cls);
         // came back to one window of a task -> bring its partners up too (just below it, no focus change)
         for (int i = 0; i < Core.Count; i++)
         {
@@ -352,6 +360,23 @@ class PQForm : Form
         UpdateGhost();
         bar.Invalidate();
         list.Invalidate();
+    }
+
+    // diagnostics: with a file named trace.on in the data folder, every window change while focusing
+    // goes to trace.log (local only), so a wrong "away" can be traced to the window that caused it
+    static bool? tracing;
+    void Trace(string what, IntPtr h, string cls)
+    {
+        if (tracing == null) tracing = File.Exists(Path.Combine(DataDir, "trace.on"));
+        if (tracing != true) return;
+        try
+        {
+            uint pid; GetWindowThreadProcessId(h, out pid);
+            string line = string.Format("{0:HH:mm:ss.fff}\t{1}\t{2}\t{3}\t{4}\t{5}\towns={6}\r\n",
+                DateTime.Now, what, h, ProcOf(h), cls, TitleOf(h), Core.Owns(h) ? 1 : 0);
+            File.AppendAllText(Path.Combine(DataDir, "trace.log"), line, new UTF8Encoding(false));
+        }
+        catch { }
     }
 
     // usable app window? (visible, titled, not minimized/cloaked/tool/topmost overlay)
@@ -801,6 +826,7 @@ class PQForm : Form
     // top-right of the primary screen, below the title-bar buttons of maximized windows
     void PlaceDefault()
     {
+        if (PlaceAt.HasValue) { Location = PlaceAt.Value; return; }
         var wa = Screen.PrimaryScreen.WorkingArea;
         Location = new Point(wa.Right - Width - (int)(10 * s), wa.Top + (int)(44 * s));
     }
@@ -1078,9 +1104,16 @@ class PQForm : Form
             awayForm.MouseDown += (o, e) =>
             {
                 if (backR.Contains(e.Location)) { IntPtr h = Core.AwayHome; if (h != IntPtr.Zero && IsWindow(h)) SetForegroundWindow(h); }
+                else if (adoptR.Contains(e.Location)) // "this window is part of the task": link it and carry on
+                {
+                    IntPtr w = lastExternal;
+                    Trace("adopt", w, ClassOf(w));
+                    OnCore(Core.Adopt(ProcOf(w), TitleOf(w)));
+                    BackToWork();
+                }
                 else if (quitR.Contains(e.Location)) { Core.Stop(); awayForm.Hide(); Sync(); Kick(); }
             };
-            awayForm.MouseMove += (o, e) => awayForm.Cursor = backR.Contains(e.Location) || quitR.Contains(e.Location) ? Cursors.Hand : Cursors.Default;
+            awayForm.MouseMove += (o, e) => awayForm.Cursor = backR.Contains(e.Location) || adoptR.Contains(e.Location) || quitR.Contains(e.Location) ? Cursors.Hand : Cursors.Default;
         }
         var wa = Screen.PrimaryScreen.WorkingArea;
         awayForm.Location = new Point(wa.X + (wa.Width - awayForm.Width) / 2, wa.Y + (wa.Height - awayForm.Height) / 2);
@@ -1101,10 +1134,13 @@ class PQForm : Form
         using (var big = new Font(bigFont.FontFamily, 26f))
             TextRenderer.DrawText(g, Core.Clock(Core.AwayLeft), big, new Rectangle(0, (int)(42 * s), f.Width, (int)(50 * s)), Ink, cf);
         TextRenderer.DrawText(g, Tr("away.body"), Font, new Rectangle(0, (int)(92 * s), f.Width, (int)(22 * s)), Muted, cf);
-        int bw = (int)(120 * s), bh = (int)(26 * s), y = f.Height - bh - (int)(14 * s), gap = (int)(10 * s);
-        backR = new Rectangle(f.Width / 2 - bw - gap / 2, y, bw, bh);
-        quitR = new Rectangle(f.Width / 2 + gap / 2, y, bw, bh);
+        int gap = (int)(8 * s), bw = (f.Width - (int)(28 * s) - gap * 2) / 3, bh = (int)(26 * s), y = f.Height - bh - (int)(14 * s);
+        int x0 = (f.Width - bw * 3 - gap * 2) / 2;
+        backR = new Rectangle(x0, y, bw, bh);
+        adoptR = new Rectangle(x0 + bw + gap, y, bw, bh);
+        quitR = new Rectangle(x0 + (bw + gap) * 2, y, bw, bh);
         Pill(g, backR, GreenFill, GreenDeep, Tr("away.back"), ageFont);
+        Pill(g, adoptR, Lerp(Bg, GreenFill, 0.5f), GreenDeep, Tr("away.adopt"), ageFont);
         Pill(g, quitR, Color.FromArgb(235, 232, 240), GrayDeep, Tr("away.stop"), ageFont);
     }
 
@@ -1610,6 +1646,7 @@ class PQForm : Form
     // data folder; `--data <dir>` runs a separate instance on another folder (e.g. a demo or a portable copy)
     static readonly string AppData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
     static string DataDir = Path.Combine(AppData, "FocusBack");
+    static Point? PlaceAt;
 
     // versions before FocusBack kept their data in %APPDATA%\ADHD-PQ: move it over once
     static void MoveOldData()
@@ -1628,6 +1665,13 @@ class PQForm : Form
         {
             DataDir = Path.GetFullPath(args[di + 1]);
             InstanceTag = "-" + ((uint)DataDir.ToLowerInvariant().GetHashCode()).ToString("x8");
+        }
+        int ai = Array.IndexOf(args, "--at"); // `--at x,y`: where the widget sits (side-by-side testing)
+        if (ai >= 0 && ai + 1 < args.Length)
+        {
+            var xy = args[ai + 1].Split(',');
+            int px, py;
+            if (xy.Length == 2 && int.TryParse(xy[0], out px) && int.TryParse(xy[1], out py)) PlaceAt = new Point(px, py);
         }
         bool wantStats = Array.IndexOf(args, "--stats") >= 0;
         bool created;

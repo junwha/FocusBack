@@ -35,7 +35,7 @@
 extern "C" {
 #endif
 
-#define PQ_API_VERSION 1
+#define PQ_API_VERSION 2
 
 typedef struct pq pq;
 typedef int64_t pq_win;
@@ -166,6 +166,9 @@ PQ_API int         pq_start(pq* c, const pq_win* wins, int n, int test, double n
 PQ_API void        pq_stop(pq* c, double now);            /* user stop, logged "stopped" */
 PQ_API int         pq_in_focus(pq* c, int id);            /* item belongs to the task being focused on */
 PQ_API int         pq_owns(pq* c, pq_win w);              /* window belongs to it */
+/* Grace card "part of this task": the current window joins the focused task (saved with its item) and
+ * the focus continues as if you never left. Returns PQ_EV_* flags, 0 if not away. */
+PQ_API int         pq_adopt(pq* c, const char* proc, const char* title, double now);
 /* Clicking another item while focusing: returns 1 = go ahead and switch, 0 = the core set the warning
  * note ("note.focus_warn"); a second click on the same item within 6 s returns 1. */
 PQ_API int         pq_try_switch(pq* c, int id, double now);
